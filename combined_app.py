@@ -1,13 +1,15 @@
 import logging
 import os
-
+from dotenv import load_dotenv
+load_dotenv()
 import firebase_admin
 from firebase_admin import credentials
 from firebase_admin import firestore
-from google.appengine.ext import webapp
-from google.appengine.ext.webapp.util import run_wsgi_app
-from google.appengine.ext import db
-from google.appengine.api import mail
+from flask import Flask, request, Response
+from resend import Resend
+app = Flask(__name__)
+
+resend = Resend(os.getenv("RESEND_API_KEY"))
 
 # Initialize Firestore
 # Use the application default credentials
@@ -29,9 +31,9 @@ class numbr:
         self.medic = medic
         self.natOffice = natOffice
 
-        self.ARMORER_GROUP_NUMBER = "1112223333" #Should be set to the phone number of the armorer group
-        self.MEDIC_GROUP_NUMBER = "4445556666" #Should be set to the phone number of the medic group
-        self.NAT_OFFICE_GROUP_NUMBER = "7778889999" #Should be set to the phone number of the natOffice group
+        self.ARMORER_GROUP_NUMBER = os.getenv("PHONE_NUMBER_1") #Should be set to the phone number of the armorer group
+        self.MEDIC_GROUP_NUMBER = os.getenv("PHONE_NUMBER_2") #Should be set to the phone number of the medic group
+        self.NAT_OFFICE_GROUP_NUMBER = os.getenv("PHONE_NUMBER_3") #Should be set to the phone number of the natOffice group
 
     def to_dict(self):
         return {
@@ -69,15 +71,38 @@ class glbvar:
         self.cb = cb if cb is not None else ['0', '0', '0', '0', '0']
 
 def dbg(st, slf):
-    slf.response.out.write("<dbg " + st + "/>")
+    slf.response.out.write(f"<dbg {st}/>")
 
 
-def printList():
+def printList(): #this was an issue
     r = ""
     docs = db_firestore.collection('numbr').stream()
     for doc in docs:
         n = numbr.from_dict(doc.to_dict())
     for n in []:
+        r = r + n.name + ':' + n.phonNbr + " med=" + str(n.medic) + " arm=" + str(n.armorer) + " nof=" + str(n.natOffice) + " ref=" + str(n.ref) + " adm=" + str(n.admin) + " act=" + str(n.active) + ", "
+    return r
+
+def send_to_group_from_member(fromVal, bdy, group):
+    """
+    Helper function to send a message to the appropriate group based on the member's roles.
+
+    Args:
+        fromVal: The phone number of the sender.
+        bdy: The message body.
+        group: The group to send the message to (medic, armorer, natoffice)
+    """
+    if group == "medic":
+        rsp = SendToGroup(fromVal, bdy, "medic")
+    elif group == "armorer":
+        rsp = SendToGroup(fromVal, bdy, "armorer")
+    elif group == "natoffice":
+        rsp = SendToGroup(fromVal, bdy, "natoffice")
+    else:
+        rsp = SendToGroup(fromVal, bdy, "medic") # Default to medic group
+    return rsp
+
+def printList(): #this was an issue
         r = r + n.name + ':' + n.phonNbr + " med=" + str(n.medic) + " arm=" + str(n.armorer) + " nof=" + str(n.natOffice) + " ref=" + str(n.ref) + " adm=" + str(n.admin) + " act=" + str(n.active) + ", "
     return r
 
@@ -127,30 +152,109 @@ def validate(pNum):  # validate a telephone number
     else:
         return False
 
-class MainPage(webapp.RequestHandler):  # sonething for the curious
-    def get(self):
-        self.response.headers['Content-Type'] = 'text/html'
-        self.response.out.write('<html><body><p>USFA Armory Tools</p>')
-        self.response.out.write('<p>Maintained by Brian Rosen</p></body></html>')
+@app.route('/')
+def addMember(group, fromVal, nam, body, mbr, rsp_xml, doc_id):
+    """
+    Helper function to add a member to a group.
 
-class Init(webapp.RequestHandler):  # A way to initialize the database, requires admin login
+    Args:
+        group: The group to add the member to (medic, armorer, natoffice).
+        fromVal: The phone number of the member.
+        nam: The name of the member.
+        body: The body of the message.
+        mbr: The member object.
+        rsp_xml: The response XML string.
+        doc_id: The document id.
+    """
+    write = lambda s: s
+    if group == "medic":
+        if (mbr == None) or not mbr.admin:  # attempt to add oneself as medic
+            query = db_firestore.collection('numbr').where('ucName', '==', nam.upper()).stream()
+            pMbr = None
+            for doc in query:
+                pMbr = numbr.from_dict(doc.to_dict())
+            if pMbr != None:  ##If we already have this name in the db
+                rsp_xml += write('<Sms>Already have an entry with that name</Sms>')
+            else:  # new number
+                n = numbr(phonNbr=fromVal, name=nam, ucName=nam.upper(), medic=True, ref=False, active=False) # create new numbr
+                doc_ref = db_firestore.collection('numbr').document() #create new numbr document
+                doc_ref.set(n.to_dict()) #store the dictionary in firestore
+                rsp_xml += write('<Sms>%s added as medic with phone number %s. Requires head tech to activate</Sms>' % (nam, fromVal))
+                query = db_firestore.collection('numbr').where('admin', '==', True).stream()
+                foundIt = []
+                for doc in query:
+                    foundIt.append(numbr.from_dict(doc.to_dict()))
+                for m in foundIt:
+                    aNum = m.phonNbr
+                    rsp_xml += write('<Sms to="%s">%s has been added to the medic list, please activate</Sms>' % (aNum, nam))
+    return rsp_xml
+
+
+def addMemberForGroup(group_name, fromVal, nam, body, mbr, rsp_xml):
+    """
+    Helper function to add a member to a specific group.
+
+    Args:
+        group_name: The name of the group (e.g., "medic").
+        fromVal: The phone number of the member.
+        nam: The name of the member.
+        body: The body of the message.
+        mbr: The member object.
+        rsp_xml: The response XML string.
+    """
+    write = lambda s: rsp_xml + s
+    
+    if (mbr == None) or not mbr.admin:  # attempt to add oneself as medic
+        query = db_firestore.collection('numbr').where('ucName', '==', nam.upper()).stream()
+        pMbr = None
+        for doc in query:
+            pMbr = numbr.from_dict(doc.to_dict())
+        if pMbr != None:  ##If we already have this name in the db
+            rsp_xml += write('<Sms>Already have an entry with that name</Sms>')
+        else:  # new number
+            n = numbr(phonNbr=fromVal, name=nam, ucName=nam.upper(), medic=(group_name == "medic"), ref=False, active=False)  # create new numbr
+            doc_ref = db_firestore.collection('numbr').document()  # create new numbr document
+            doc_ref.set(n.to_dict())  # store the dictionary in firestore
+            rsp_xml += write(f'<Sms>%s added as {group_name} with phone number %s. Requires head tech to activate</Sms>' % (nam, fromVal))
+            query = db_firestore.collection('numbr').where('admin', '==', True).stream()
+            foundIt = []
+            for doc in query:
+                foundIt.append(numbr.from_dict(doc.to_dict()))
+            for m in foundIt:
+                aNum = m.phonNbr
+                rsp_xml += write(f'<Sms to="%s">%s has been added to the {group_name} list, please activate</Sms>' % (aNum, nam))
+    else:
+        write('<Sms>You are not authorized to use this command</Sms>')
+    return rsp_xml
+
+
+
+
+
+
+
+
+
+
+
+
+
+@app.route('/')
+def main_page():
+    html_content = '<html><body><p>USFA Armory Tools</p><p>Maintained by Brian Rosen</p></body></html>'
+    return Response(html_content, mimetype='text/html')
+
+
+class Init:  # A way to initialize the database, requires admin login
     def get(self):
         # Delete all documents in the 'numbr' collection
         docs = db_firestore.collection('numbr').stream()
-        for doc in docs:
             doc.reference.delete()
 
         # Delete all documents in the 'glbvar' collection
         docs = db_firestore.collection('glbvar').stream()
         for doc in docs:
             doc.reference.delete()
-        
-        #allNum = db.GqlQuery("SELECT * FROM numbr")
-        #for n in allNum.run():  # delete all existing entries
-        #    n.delete()
-        #allGlb = db.GqlQuery("SELECT * FROM glbvar")
-        #for n in allGlb.run():  # delete all existing entries
-        #    n.delete()
         n = numbr(phonNbr="7246122359", name="Brian", ucName='BRIAN', admin=True, super=True) # set up the super-user
         doc_ref = db_firestore.collection('numbr').document()
         doc_ref.set(n.to_dict())
@@ -160,208 +264,172 @@ class Init(webapp.RequestHandler):  # A way to initialize the database, requires
         self.response.headers['Content-Type'] = 'text/html'
         self.response.out.write('<html><body><p>ok</p></html>')
 
-class ReceiveSMS(webapp.RequestHandler):
-    # Handle received SMS
+@app.route('/rsms', methods=['GET', 'POST'])
+def receive_sms():
+    def write(s):  # defining inside the get class allows us to use self, prints line to output page and logger.
+        #self.response.out.write(s)
+        logging.debug(str(s))
+        return s
 
-    def get(self):
-        def write(s):  # defining inside the get class allows us to use self, prints line to output page and logger
-            self.response.out.write(s)
-            logging.debug(s)
+    rsp_xml = '' #building response outside of class
+    try:
+        docs = db_firestore.collection('glbvar').where('idx', '==', 1).stream()
+        g = None
+        for doc in docs:
+            g = glbvar(idx = doc.get("idx"), cbp = doc.get("cbp"), cb = doc.get("cb"))
 
-        try:
-            docs = db_firestore.collection('glbvar').where('idx', '==', 1).stream()
-            g = None
-            for doc in docs:
-                g = glbvar(idx = doc.get("idx"), cbp = doc.get("cbp"), cb = doc.get("cb"))
+        #self.response.headers['Content-Type'] = 'text/xml'  # return XML to Twilio
+        rsp_xml += '<?xml version="1.0" encoding="UTF-8"?>'
+        fromVal = request.values.get('From').encode('ascii', 'ignore')  # get phone num of sender
+        smsSid = request.values.get('SmsSid').encode('ascii', 'ignore')  # get SMS Id
+        body = request.values.get('Body').encode('ascii', 'ignore')  # get body of message
+        body = body.translate(str.maketrans('', '', "'!@#$%^&*"))
+        logging.debug(os.environ.get("TWILIO_AUTH_TOKEN"))
+        # validator = RequestValidator(auth_token) #set up to check signature using our auth token
+        url = "http://usfa-armory.appspot.com/rsms?" + request.query_string  # create the string
+        twilio_signature = request.headers.get("X-Twilio-Signature")  # get the signature from the header
+        sigValid = True  # validator.validate(url, {}, twilio_signature) #validate signature
+        if os.environ['SERVER_SOFTWARE'].startswith('Development'):  # if this is the development server
+            sigValid = True  # then we don't get a signature, so believe it's valid
+            ts = "None"
+        if twilio_signature != None:  # this is just for debugging
+            ts = twilio_signature
+        logging.debug('from=%s sig=%s Validator=%s URL=%s' % (fromVal, ts, sigValid, url))
+        if fromVal == None or smsSid == None or sigValid == False:  # So, if no from, no sid or bad signature
+            rsp_xml += '<!-- So Sad, Too Bad -->'  # thats all she wrote
+        else:
+            rsp_xml += '<Response>'  # valid response
+            fromVal = fromVal.lstrip('+')  # get rid of any leading plus
+            fromVal = fromVal.lstrip('1')  # get rid of any leading country code
+            query = db_firestore.collection('numbr').where('phonNbr', '==', fromVal).stream()
+            mbr = None
+            for doc in query:
+                mbr = numbr.from_dict(doc.to_dict())
 
-            self.response.headers['Content-Type'] = 'text/xml'  # return XML to Twilio
-            write('<?xml version="1.0" encoding="UTF-8"?>')
-            fromVal = self.request.get('From').encode('ascii', 'ignore')  # get phone num of sender
-            smsSid = self.request.get('SmsSid').encode('ascii', 'ignore')  # get SMS Id
-            body = self.request.get('Body').encode('ascii', 'ignore')  # get body of message
-            body = body.translate(None, "'!@#$%^&*")
-            logging.debug(os.environ.get("TWILIO_AUTH_TOKEN"))
-            # validator = RequestValidator(auth_token) #set up to check signature using our auth token
-            url = "http://usfa-armory.appspot.com/rsms?" + self.request.query_string  # create the string
-            twilio_signature = self.request.headers.get("X-Twilio-Signature")  # get the signature from the header
-            sigValid = True  # validator.validate(url, {}, twilio_signature) #validate signature
-            if os.environ['SERVER_SOFTWARE'].startswith('Development'):  # if this is the development server
-                sigValid = True  # then we don't get a signature, so believe it's valid
-                ts = "None"
-            if twilio_signature <> None:  # this is just for debugging
-                ts = twilio_signature
-            logging.debug('from=%s sig=%s Validator=%s URL=%s' % (fromVal, ts, sigValid, url))
-            if fromVal == None or smsSid == None or sigValid == False:  # So, if no from, no sid or bad signature
-                write('<!-- So Sad, Too Bad -->')  # thats all she wrote
+
+            if (body != None) and body[0] == '+':  # This is a command
+                cmd = None
+                nam = None
+                cmd = parseToken(body, 1)  # get the command token
+                if cmd != None:
+                    nam = parseToken(body, len(cmd) + 2)  # next token is usually a name
+                    # **********************************************************************************************************
+                    # ***** Start of MEDIC only commands
+                    if cmd == "medic":  # if the command is to add a medic
+                        if (mbr == None) or not mbr.admin:
+                            query = db_firestore.collection('numbr').where('ucName', '==', nam.upper()).stream()
+                            pMbr = None
+                            for doc in query:
+                                pMbr = numbr.from_dict(doc.to_dict())
+                            if pMbr != None:  ##If we already have this name in the db
+                                pNum = pMbr.phonNbr
+                                if pMbr.medic:
+                                    rsp_xml += write('<Sms>%s is already a medic</Sms>' % nam)
+                                else:
+                                    pMbr.medic = True
+                                    doc_ref = db_firestore.collection('numbr').document()  # create new numbr document
+                                    doc_ref.set(pMbr.to_dict())  # store the dictionary in firestore
+                                    rsp_xml += write('<Sms>%s added as medic with phone number %s</Sms>' % (nam, pNum))
+                                    rsp_xml += write('<Sms to="%s">You have been added to the USA Fencing medic list as %s</Sms>' % (pNum, nam))
+                            else:  # new number
+                                n = numbr(phonNbr=fromVal, name=nam, ucName=nam.upper(), medic=True)
+                                doc_ref = db_firestore.collection('numbr').document()  # create new numbr document
+                                doc_ref.set(n.to_dict())  # store the dictionary in firestore
+                                rsp_xml += write('<Sms>%s added as medic with phone number %s</Sms>' % (nam, fromVal))
+                                rsp_xml += write('<Sms to="%s">You have been added to the USA Fencing medic list as %s</Sms>' % (fromVal, nam))
+                    elif cmd == "remove":  # Remove - remove this number from the list
+                        if True:  # all of the following logic works as expected
+                        rsp_xml += write('<Sms>remove block not enabled</Sms>')
+                    elif cmd == "ref":  # Ref - add sender as a ref
+                        if True:  # all of the following logic works as expected
+                        rsp_xml += write('<Sms>ref block not enabled</Sms>')
+                elif (cmd == "to" or cmd == "reply"):  # To - send message to the caller, copy the group or nat office
+                    if True:#all of the following logic works as expected
+                        rsp_xml += write('<Sms>to or reply block not enabled</Sms>')
+                elif cmd == "inactivate":  # Inactivate - don't send this number any more messages, but keep it
+                    if True:#all of the following logic works as expected
+                        rsp_xml += write('<Sms>inactivate block not enabled</Sms>')
+                elif cmd == "activate":  # Activate - resume sending this number messages
+                    if True:#all of the following logic works as expected
+                    
+                elif cmd == "admin":  # Admin - make this number an admin
+                    if True:#all of the following logic works as expected
+                        rsp_xml += write('<Sms>admin block not enabled</Sms>')
+                elif cmd == "deadmin":  # AdminDelete - remove admin from this number
+                    if True:#all of the following logic works as expected
+                        rsp_xml += write('<Sms>deadmin block not enabled</Sms>')
+                elif cmd[:4] == "list":  # list current medics or armorers
+                    if True:#all of the following logic works as expected
+                        rsp_xml += write('<Sms>list block not enabled</Sms>')
+                elif cmd == "addref":  # Add ref as admin
+                    if True:#all of the following logic works as expected
+                        rsp_xml += write('<Sms>addref block not enabled</Sms>')
+                elif (cmd == "1" or cmd == "2" or cmd == "3" or cmd == "4"):  # 1-4 are replies to the last 4 messages sent to the group
+                    if True:#all of the following logic works as expected
+                        rsp_xml += write('<Sms>1-4 block not enabled</Sms>')
+                else:  # bad command
+                    rsp_xml += write('<Sms>Bad command</Sms>')
             else:
-                write('<Response>')  # valid response
-                fromVal = fromVal.lstrip('+')  # get rid of any leading plus
-                fromVal = fromVal.lstrip('1')  # get rid of any leading country code
-                query = db_firestore.collection('numbr').where('phonNbr', '==', fromVal).stream()
-                mbr = None
-                for doc in query:
-                    mbr = numbr.from_dict(doc.to_dict())
+                bdy = mbr.name if mbr else str(fromVal)
+                bdy += ":" + body  # Always include the message body
+
+                add_reply = True  # Flag to determine if "+N to reply" should be added
+                rsp = ""
+                isMedic = False
+                isArmorer = False
+                isNatOffice = False
+                if mbr is None:  # Unregistered user
+                    if fromVal == self.MEDIC_GROUP_NUMBER:
+                        isMedic = True
+                    elif fromVal == self.ARMORER_GROUP_NUMBER:
+                        isArmorer = True
+                    elif fromVal == self.NAT_OFFICE_GROUP_NUMBER:
+                        isNatOffice = True
+                elif mbr:
+                    isMedic = mbr.medic
+                    isArmorer = mbr.armorer
+                    isNatOffice = mbr.natOffice
 
 
-                if (body != None) and body[0] == '+':  # This is a command
-                    cmd = None
-                    nam = None
-                    cmd = parseToken(body, 1)  # get the command token
-                    if cmd != None:
-                        nam = parseToken(body, len(cmd) + 2)  # next token is usually a name
-                    #**********************************************************************************************************
-                    #***** Start of MEDIC only commands
-                    if cmd == "medic":  # Medic - add this number as an medic
-                        if (mbr == None) or not mbr.admin:  # attempt to add oneself as medic
-                            query = db_firestore.collection('numbr').where('ucName', '==', nam.upper()).stream()
-                            pMbr = None
-                            for doc in query:
-                                pMbr = numbr.from_dict(doc.to_dict())
+                if add_reply and not isNatOffice:
+                    bdy += "  +" + str(g.cbp) + " to reply"
+                g.cbp = (g.cbp % 4) + 1
+                #Add to circular buffer
+                g.cb[g.cbp] = fromVal
+                if isMedic:
+                     rsp = SendToGroup(fromVal, bdy, "medic")
+                elif isArmorer: 
+                    rsp = send_to_group_from_member(fromVal, bdy, "armorer")
+                elif isNatOffice: 
+                    rsp = send_to_group_from_member(fromVal, bdy, "natoffice")
+                else: 
+                    rsp = send_to_group_from_member(fromVal, bdy, "medic")
+                doc_ref = db_firestore.collection('glbvar').document(doc.id)
+                doc_ref.update({"cbp": g.cbp, "cb": g.cb})
+                rsp_xml += write(rsp)
+                if mbr == None: rsp_xml += write('<Sms to="' + fromVal + '">Got It</Sms>')
 
-                            if pMbr <> None:  ##If we already have this name in the db
-                                write('<Sms>Already have an entry with that name</Sms>')
-                            else:  # new number
-                                n = numbr(phonNbr=fromVal, name=nam, ucName=nam.upper(), medic=True, ref=False, active=False) # create new numbr
-                                doc_ref = db_firestore.collection('numbr').document() #create new numbr document
-                                doc_ref.set(n.to_dict()) #store the dictionary in firestore
+            rsp_xml += '</Response>'
+    except (TypeError, ValueError):
+            rsp_xml = "<Response><Sms>I'm sorry, something went wrong, we'll take a look</Sms></Response>"
+            fromVal = "unknown"
+            body = "unknown"
+            sender_address = "admin@usfa-armory.appspotmail.com"
+            recipient_address = "brian.rosen@gmail.com"
+            subject = "StripCall Error Report"
+            mbody = "FromVal=%s Body=%s Type=%s Value=%s" % (fromVal, body, TypeError, ValueError)
+            #mail.send_mail(sender_address, recipient_address, subject, mbody)
+            r = resend.emails.send({
+                "from": "noreply@usfa-armory.appspotmail.com",
+                "to": "brian.rosen@gmail.com",
+                "subject": "StripCall Error Report",
+                "text": mbody,
+            })
+            if r.get("error") is not None:
+                logging.debug(f"Error sending email: {r.get('error')}")
 
-                                write('<Sms>%s added as medic with phone number %s. Requires head tech to activate</Sms>' % (nam, fromVal))
-                                query = db_firestore.collection('numbr').where('admin', '==', True).stream()
-                                foundIt = []
-                                for doc in query:
-                                    foundIt.append(numbr.from_dict(doc.to_dict()))
-                                for m in foundIt:
-                                    aNum = m.phonNbr
-                                    write('<Sms to="%s">%s has been added to the medic list, please activate</Sms>' % (aNum, nam))
-                        else:
-                            # in the below, the "3" limits us to ONE whitespace between tokens, not good
-                            pNum = parseToken(body, len(cmd) + len(nam) + 3)  # 3rd token is phone number
-                            if pNum == None or len(pNum) <> 10 or not validate(pNum):
-                                write("<Sms>No number or bad phone number for %s, no action taken</Sms>" % nam)
-                            else:                                
-                                query = db_firestore.collection('numbr').where('phonNbr', '==', pNum).stream()
-                                foundIt = []
-                                for doc in query:
-                                    foundIt.append(numbr.from_dict(doc.to_dict()))
-                                pMbr = None
-                                for p in foundIt:
-                                    pMbr = p
-                                    break
-                                
-                                if pMbr <> None:  ##If we already have this number in the db
-                                    pMbr.medic = True  # just set his medic flag
-                                    pMbr.ref = False  # and remove any ref flag
-                                    doc_ref = db_firestore.collection('numbr').document() #create new numbr document
-                                    doc_id = doc_ref.id #get the unique id of the new document
-                                    doc_ref = db_firestore.collection('numbr').document(doc_id) #get the document with the unique ID
-                                    doc_ref.set(pMbr.to_dict()) #store the dictionary in firestore
-                                else:  # new number
-                                    n = numbr(phonNbr=pNum, name=nam, ucName=nam.upper(), medic=True, ref=False)# create new numbr
-                                    doc_ref = db_firestore.collection('numbr').document() #create new numbr document
-                                    doc_ref.set(n.to_dict()) #store the dictionary in firestore
+    return Response(rsp_xml, mimetype='text/xml')
 
-                                write('<Sms>%s added as medic with phone number %s</Sms>' % (nam, pNum))
-                                write('<Sms to="%s">You have been added to the USA Fencing medic list as %s</Sms>' % (pNum, nam))
-                    #***** End of MEDIC only commands
-                    #**********************************************************************************************************
-                    #***** Start of NAT OFFICE only commands
-                    elif cmd == "natoffice":  # NatOffice - add this number as an NatOffice
-                        if (mbr == None) or not (mbr.admin or mbr.super):  # attempt to add oneself as NatOffice
-                            query = db_firestore.collection('numbr').where('ucName', '==', nam.upper()).stream()
-                            pMbr = None
-                            for doc in query:
-                                pMbr = numbr.from_dict(doc.to_dict())
-
-                            if pMbr <> None:  ##If we already have this name in the db
-                                write('<Sms>Already have an entry with that name</Sms>')
-                            else:  # new number
-                                n = numbr(phonNbr=fromVal, name=nam, ucName=nam.upper(), natOffice=True, ref=False, active=False) # create new numbr
-                                doc_ref = db_firestore.collection('numbr').document() #create new numbr document
-                                doc_ref.set(n.to_dict()) #store the dictionary in firestore
-
-                                write('<Sms>%s added as NatOffice with phone number %s. Requires head tech to activate</Sms>' % (nam, fromVal))
-                                query = db_firestore.collection('numbr').where('admin', '==', True).stream()
-                                foundIt = []
-                                for doc in query:
-                                    foundIt.append(numbr.from_dict(doc.to_dict()))
-                                for m in foundIt:
-                                    aNum = m.phonNbr
-                                    write('<Sms to="%s">%s has been added to the National Office list, please activate</Sms>' % (aNum, nam))
-                        else:
-                            # in the below, the "3" limits us to ONE whitespace between tokens, not good
-                            pNum = parseToken(body, len(cmd) + len(nam) + 3)  # 3rd token is phone number
-                            if pNum == None or len(pNum) <> 10 or not validate(pNum):
-                                write("<Sms>No number or bad phone number for %s, no action taken</Sms>" % nam)
-                            else:                                
-                                query = db_firestore.collection('numbr').where('phonNbr', '==', pNum).stream()
-                                pMbr = None
-                                for doc in query:
-                                    pMbr = numbr.from_dict(doc.to_dict())
-                                if pMbr <> None:  ##If we already have this number in the db
-                                    pMbr.natOffice = True  # just set his natOffice flag
-                                    doc_ref = db_firestore.collection('numbr').document(doc.id) #get the document with the unique ID
-                                    doc_ref.set(pMbr.to_dict()) #store the dictionary in firestore
-                                else:  # new number
-                                    n = numbr(phonNbr=pNum, name=nam, ucName=nam.upper(), natOffice=True, ref=False)# create new numbr
-                                    doc_ref = db_firestore.collection('numbr').document() #create new numbr document
-                                    doc_ref.set(n.to_dict()) #store the dictionary in firestore
-                                write('<Sms>%s added as NatOffice with phone number %s</Sms>' % (nam, pNum))
-                                write('<Sms to="%s">You have been added to the National Office list as %s</Sms>' % (pNum, nam))
-                    #**********************************************************************************************************
-                    #**********************************************************************************************************
-                    #***** Start of ARMORY only commands
-                    elif cmd == "armorer":  # Armorer - add this number as an armorer
-                        if (mbr == None) or not mbr.admin:  # attempt to add oneself as armorer
-                            query = db_firestore.collection('numbr').where('ucName', '==', nam.upper()).stream()
-                            pMbr = None
-                            for doc in query:
-                                pMbr = numbr.from_dict(doc.to_dict())
-
-                            if pMbr <> None:  ##If we already have this name in the db
-                                write('<Sms>Already have an entry with that name</Sms>')
-                            else:  # new number
-                                n = numbr(phonNbr=fromVal, name=nam, ucName=nam.upper(), armorer=True, ref=False, active=False) # create new numbr
-                                doc_ref = db_firestore.collection('numbr').document() #create new numbr document
-                                doc_ref.set(n.to_dict()) #store the dictionary in firestore
-
-                                write('<Sms>%s added as armorer with phone number %s. Requires head tech to activate</Sms>' % (nam, fromVal))
-                                query = db_firestore.collection('numbr').where('admin', '==', True).stream()
-                                foundIt = []
-                                for doc in query:
-                                    foundIt.append(numbr.from_dict(doc.to_dict()))
-                                for m in foundIt:
-                                    aNum = m.phonNbr
-                                    write('<Sms to="%s">%s has been added to the armorers list, please activate</Sms>' % (aNum, nam))
-                        else:
-                            # in the below, the "3" limits us to ONE whitespace between tokens, not good
-                            pNum = parseToken(body, len(cmd) + len(nam) + 3)  # 3rd token is phone number
-                            if pNum == None or len(pNum) <> 10 or not validate(pNum):
-                                write("<Sms>No number or bad phone number for %s, no action taken</Sms>" % nam)
-                            else:                                
-                                query = db_firestore.collection('numbr').where('phonNbr', '==', pNum).stream()
-                                foundIt = []
-                                for doc in query:
-                                    foundIt.append(numbr.from_dict(doc.to_dict()))
-                                pMbr = None
-                                for p in foundIt:
-                                    pMbr = p
-                                    break
-                                if pMbr <> None:  ##If we already have this number in the db
-                                    pMbr.armorer = True  # just set his armorer flag
-                                    pMbr.ref = False  # and remove any ref flag
-                                    doc_ref = db_firestore.collection('numbr').document() #create new numbr document
-                                    doc_id = doc_ref.id #get the unique id of the new document
-                                    doc_ref = db_firestore.collection('numbr').document(doc_id) #get the document with the unique ID
-                                    doc_ref.set(pMbr.to_dict()) #store the dictionary in firestore
-                                else:  # new number
-                                    n = numbr(phonNbr=pNum, name=nam, ucName=nam.upper(), armorer=True, ref=False) # create new numbr
-                                    doc_ref = db_firestore.collection('numbr').document() #create new numbr document
-                                    doc_ref.set(n.to_dict()) #store the dictionary in firestore
-
-                                write('<Sms>%s added as armorer with phone number %s</Sms>' % (nam, pNum))
-                                write('<Sms to="%s">You have been added to the armorers list as %s</Sms>' % (pNum, nam))
-                    #***** End of ARMORY only commands
-                    #**********************************************************************************************************
                     elif cmd == "remove":  # Remove - remove this number from the list
                         if (mbr == None) or not mbr.admin:
                             write('<Sms>You are not authorized for that command</Sms>')
@@ -581,9 +649,11 @@ class ReceiveSMS(webapp.RequestHandler):
                                 write("<Sms>Invalid list type</Sms>")
                                 query = None
                             if query != None:
-                            foundIt = []
-                            for doc in query:
-                                foundIt.append(numbr.from_dict(doc.to_dict()))
+                                foundIt = []
+                                for doc in query:
+                                    doc_id = doc.id
+
+                                    foundIt.append(numbr.from_dict(doc.to_dict()))
                             
 
 
@@ -599,7 +669,7 @@ class ReceiveSMS(webapp.RequestHandler):
                         else:
                             # in the below, the "3" limits us to ONE whitespace between tokens, not good
                             pNum = parseToken(body, len(cmd) + len(nam) + 3)  # 3rd token is phone number
-                            if pNum == None or len(pNum) <> 10 or not validate(pNum):
+                            if pNum == None or len(pNum) != 10 or not validate(pNum):
                                 write("<Sms>No number or bad phone number for %s, no action taken</Sms>" % nam)
                             else:
                                 query = db_firestore.collection('numbr').where('phonNbr', '==', pNum).stream()
@@ -607,7 +677,7 @@ class ReceiveSMS(webapp.RequestHandler):
                                 for doc in query:
                                     pMbr = numbr.from_dict(doc.to_dict())
 
-                                if pMbr <> None:  ##If we already have this number in the db
+                                if pMbr != None:  ##If we already have this number in the db
                                     pMbr.medic = False #remove medic flag
                                     pMbr.armorer = False #remove armorer flag
                                     pMbr.ref = True  # and set ref flag
@@ -659,7 +729,7 @@ class ReceiveSMS(webapp.RequestHandler):
                                 write(SendToGroup(fromVal,s,"armorer"))
                     else:  # bad command
                         write('<Sms>Bad command</Sms>')
-                else:  # Not a command
+                else:  # Not a command - Process non command message.
                     bdy = mbr.name if mbr else str(fromVal)
                     bdy += ":" + body  # Always include the message body
 
@@ -688,41 +758,17 @@ class ReceiveSMS(webapp.RequestHandler):
                     g.cb[g.cbp] = fromVal
                     if isMedic:
                          rsp = SendToGroup(fromVal, bdy, "medic")
-                    elif isArmorer:
-                         rsp = SendToGroup(fromVal, bdy, "armorer")
-                    elif isNatOffice:
-                         rsp = SendToGroup(fromVal, bdy, "natoffice")
-                            if mbr.medic:
-                                rsp = SendToGroup(fromVal, bdy, "medic")
-                            elif mbr.natOffice:
-                                rsp = SendToGroup(fromVal, bdy, "natoffice")
-                            else:
-                                rsp = SendToGroup(fromVal, bdy, "armorer")
-                        else: rsp = SendToGroup(fromVal, bdy, "medic")
-                    
+                    elif isArmorer: 
+                        rsp = send_to_group_from_member(fromVal, bdy, "armorer")
+                    elif isNatOffice: 
+                        rsp = send_to_group_from_member(fromVal, bdy, "natoffice")
+                    else: 
+                        rsp = send_to_group_from_member(fromVal, bdy, "medic")
                     doc_ref = db_firestore.collection('glbvar').document(doc.id)
                     doc_ref.update({"cbp": g.cbp, "cb": g.cb})
                     write(rsp)
-                    if mbr == None: write('<Sms to="' + fromVal + '">Got It</Sms>')
-
-                write('</Response>')
-        except (TypeError, ValueError):
-                self.response.headers['Content-Type'] = 'text/xml'
-                write("<Response><Sms>I'm sorry, something went wrong, we'll take a look</Sms></Response>")
-                sender_address = "admin@usfa-armory.appspotmail.com"
-                recipient_address = "brian.rosen@gmail.com"
-                subject = "StripCall Error Report"
-                mbody = "FromVal=%s Body=%s Type=%s Value=%s" % (fromVal, body, TypeError, ValueError)
-                mail.send_mail(sender_address, recipient_address, subject, mbody)
-
-application = webapp.WSGIApplication([('/', MainPage),
-                                        ('/rsms', ReceiveSMS),
-                                        ('/xinit', Init),
-                                        ],
-                                     debug=True)
-
-def main():
-    run_wsgi_app(application)
 
 if __name__ == "__main__":
-    main()
+    app.run(debug=True)
+
+
