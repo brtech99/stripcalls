@@ -89,7 +89,7 @@ def webhook():
         sender_group = "ref"
 
     def parse_phone_number(phone_str):
-        """Parses and validates a phone number from a string, returning a cleaned 10-digit US number or an international number."""
+        """Parses and validates a phone number from a string, returning a cleaned number or None."""
         # Remove common separators
         cleaned_number = re.sub(r"[-()\s]", "", phone_str)
 
@@ -115,10 +115,73 @@ def webhook():
         command_parts = body[1:].split()  # Remove "+" and split by spaces
         command = command_parts[0].lower() if command_parts else None
         parameters = command_parts[1:] if len(command_parts) > 1 else []
-        
-        phone_number, phone_format = parse_phone_number(parameters[-1]) if parameters else (None, None)
 
-        logger.info(f"Handling command: {command}, Parameters: {parameters}, Phone number: {phone_number}, Format: {phone_format}")
+        if command in ["medic", "armorer", "natloff"]:
+            if len(parameters) < 2:
+                return f"Error: The +{command} command requires a name and a phone number."
+
+            name = parameters[0]
+            phone_str = parameters[1]
+            phone_number, phone_format = parse_phone_number(phone_str)
+
+            if not phone_number:
+                return f"Error: Invalid phone number format for {phone_str}."
+
+            # 1. Look up by name
+            query_by_name = datastore_client.query(kind='numbr')
+            query_by_name.add_filter('name', '=', name)
+            results_by_name = list(query_by_name.fetch())
+
+            if results_by_name:
+                # Found an entity with the same name
+                entity = results_by_name[0]
+                stored_phone_number = entity.get('number')
+
+                if stored_phone_number == phone_number:
+                    return f"Entry for {name} with number {phone_str} already exists."
+                else:
+                    # Name exists, but numbers differ. Check if the new number exists elsewhere.
+                    query_by_number = datastore_client.query(kind='numbr')
+                    query_by_number.add_filter('number', '=', phone_number)
+                    results_by_number = list(query_by_number.fetch())
+
+                    if results_by_number:
+                        # The number is associated with another entry
+                        other_entity = results_by_number[0]
+                        other_name = other_entity.get('name')
+                        return f"That telephone number ({phone_str}) is already associated with {other_name}."
+                    else:
+                        # Name exists, numbers differ, new number not found elsewhere. Update the existing entity.
+                        entity['number'] = phone_number
+                        datastore_client.put(entity)
+                        return f"Updated telephone number for {name} to {phone_str}."
+            else:
+                # No entity found with the same name. Check if the phone number exists elsewhere.
+                query_by_number = datastore_client.query(kind='numbr')
+                query_by_number.add_filter('number', '=', phone_number)
+                results_by_number = list(query_by_number.fetch())
+
+                if results_by_number:
+                    # The number is associated with another entry
+                    other_entity = results_by_number[0]
+                    other_name = other_entity.get('name')
+                    return f"That telephone number ({phone_str}) is already associated with {other_name}."
+                else:
+                    # Neither name nor number exists. Create a new entity.
+                    new_entity = datastore_client.entity(datastore_client.key('numbr'))
+                    new_entity.update({
+                        'name': name,
+                        'number': phone_number,
+                        'admin': False, # Assuming new entries are not admins by default
+                        'group': command # Use the command (medic, armorer, natloff) as the group
+                    })
+                    datastore_client.put(new_entity)
+                    return f"Created new entry for {name} with telephone number {phone_str} in group {command}."
+        else:
+            # Handle other commands or non-command messages
+            response = MessagingResponse()
+            response.message(f"Received unknown command: {command}")
+            return str(response)
 
 
     if twilio_client:        
@@ -127,11 +190,10 @@ def webhook():
             # If not within the simulator range, send via Twilio
             try:
                 twilio_client.messages.create(
-                    to=from_number, from_=to_number, body=f"Got: {body}"
-                )
+                    to=from_number, from_=to_number, body=f"Received: {body}" # Or whatever response you want
+ ) # This part might need adjustment based on how you want to respond to commands
             except Exception as e:
-                logger.error(f"Error sending echo message: {e}")
-        # else we are talking to the simulator, do not send via Twilio
+                logger.error(f"Error sending Twilio message: {e}")
 
     return ""
 
@@ -165,5 +227,5 @@ def hello_world():
         return response_string
     else:
         response_string = response_string + f"Hello, world! Project ID: {project_id}. User 'Brian' not found."
-        return response_string
-
+        return response_string   
+#test  
