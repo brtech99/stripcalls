@@ -3,5 +3,9 @@ pip
 autopep8
 
 # App
-flask
+Flask
+gunicorn
+twilio
 resend
+google-cloud-secret-manager
+google-cloud-datastore==2.15.0

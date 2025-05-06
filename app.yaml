@@ -1,0 +1,13 @@
+runtime: python311
+entrypoint: gunicorn -w 4 -k sync main:app
+service_account: stripcalls-service@stripcalls-458912.iam.gserviceaccount.com
+
+env_variables:
+  DATASTORE_PROJECT_ID: usfa-armory
+  TWILIO_ACCOUNT_SID: ""
+  TWILIO_AUTH_TOKEN: ""
+
+handlers:
+  - url: /simulator
+    static_files: simulator.html
+    upload: simulator.html

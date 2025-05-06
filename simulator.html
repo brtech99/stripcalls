@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Message Simulator</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: #f4f4f4;
+        }
+        .container {
+            width: 80%;
+            margin: 20px auto;
+            background-color: #fff;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        .title-bar {
+            background-color: #007bff;
+            color: white;
+            padding: 10px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .message-window {
+            height: 400px;
+            overflow-y: scroll;
+            padding: 10px;
+            border-bottom: 1px solid #eee;
+        }
+        .message {
+            margin-bottom: 10px;
+            padding: 8px;
+            border-radius: 5px;
+            max-width: 70%;
+        }
+        .received {
+            background-color: #e9e9eb;
+            align-self: flex-start;
+            text-align: left;
+        }
+        .sent {
+            background-color: #007bff;
+            color: white;
+            align-self: flex-end;
+            text-align: right;
+            margin-left: auto;
+        }
+        .input-area {
+            display: flex;
+            padding: 10px;
+            background-color: #f8f9fa;
+        }
+        .input-area input[type="text"] {
+            flex-grow: 1;
+            padding: 8px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            margin-right: 10px;
+        }
+        .input-area button {
+            padding: 8px 15px;
+            background-color: #28a745;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <div class="title-bar">
+            <span>+12025551000</span>
+            <span>Name Placeholder</span>
+            <span>Group Placeholder</span>
+        </div>
+        <div class="message-window" id="messageWindow">
+            <!-- Messages will appear here -->
+        </div>
+        <div class="input-area">
+            <input type="text" id="messageInput" placeholder="Enter message">
+            <button id="sendButton">Send</button>
+            <select id="recipientSelect">
+                <option value="armorer">armorer</option>
+                <option value="medic">medic</option>
+                <option value="natloff">natloff</option>
+            </select>
+        </div>
+    </div>
+    <script>
+        const MEDIC_NUMBER = '+13127577223';
+        const ARMORER_NUMBER = '+17542276679';
+        const NATLOFF_NUMBER = '+16504803067';
+        const SIMULATOR_NUMBER = '+12025551001';
+
+        document.addEventListener('DOMContentLoaded', function () {
+            const messageInput = document.getElementById('messageInput');
+            const sendButton = document.getElementById('sendButton');
+            const messageWindow = document.getElementById('messageWindow');
+            const recipientSelect = document.getElementById('recipientSelect');
+
+            sendButton.addEventListener('click', function () {
+                const messageText = messageInput.value;
+                if (messageText.trim() !== '') {
+                    const selectedRecipient = recipientSelect.value;
+                    let recipientNumber;
+                    switch (selectedRecipient) {
+                        case 'medic':
+                            recipientNumber = MEDIC_NUMBER;
+                            break;
+                        case 'armorer':
+                            recipientNumber = ARMORER_NUMBER;
+                            break;
+                        case 'natloff':
+                            recipientNumber = NATLOFF_NUMBER;
+                            break;
+                    }
+
+                    const requestData = {
+                        'From': SIMULATOR_NUMBER,
+                        'To': recipientNumber,
+                        'Body': messageText
+                    };
+
+                    const formData = new URLSearchParams(requestData).toString();
+
+                    fetch('/webhook', {
+                      method: 'POST',
+                      headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                      },
+                      body: formData,
+                    })
+                      .then(response => {
+                        if (response.ok) {
+                          displaySentMessage(messageText);
+                        } else {
+                          console.error('Error:', response.statusText);
+                        }
+                      })
+                      .catch(error => {
+                        console.error('Error:', error);
+                      });
+                    
+                    messageInput.value = '';
+                  }
+            });
+        });
+            function displaySentMessage(message) {
+            const messageDiv = document.createElement('div');
+            messageDiv.classList.add('message', 'received');
+            messageDiv.textContent = message;
+            messageWindow.appendChild(messageDiv);
+        }
+    </script>
+    
+    
+</body>
+</html>
