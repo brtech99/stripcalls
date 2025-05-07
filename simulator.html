@@ -75,7 +75,7 @@
 </head>
 
 <body>
-    <div class="container">
+    <div class="container" id="simulator-12025551000">
         <div class="title-bar">
             <span>+12025551000</span>
             <span>Name Placeholder</span>
@@ -94,17 +94,93 @@
             </select>
         </div>
     </div>
+    <div class="container" id="simulator-12025551001">
+        <div class="title-bar">
+            <span>+12025551001</span>
+            <span>Name Placeholder</span>
+            <span>Group Placeholder</span>
+        </div>
+        <div class="message-window" id="messageWindow-12025551001">
+            <!-- Messages will appear here -->
+        </div>
+        <div class="input-area">
+            <input type="text" id="messageInput-1" placeholder="Enter message">
+            <button id="sendButton-1">Send</button>
+             <select id="recipientSelect-1">
+                <option value="armorer">armorer</option>
+                <option value="medic">medic</option>
+                <option value="natloff">natloff</option>
+            </select>
+        </div>
+    </div>
+     <div class="container" id="simulator-12025551002">
+        <div class="title-bar">
+            <span>+12025551002</span>
+            <span>Name Placeholder</span>
+            <span>Group Placeholder</span>
+        </div>
+        <div class="message-window" id="messageWindow-12025551002">
+            <!-- Messages will appear here -->
+        </div>
+        <div class="input-area">
+            <input type="text" id="messageInput-2" placeholder="Enter message">
+            <button id="sendButton-2">Send</button>
+             <select id="recipientSelect-2">
+                <option value="armorer">armorer</option>
+                <option value="medic">medic</option>
+                <option value="natloff">natloff</option>
+            </select>
+        </div>
+    </div>
+     <div class="container" id="simulator-12025551003">
+        <div class="title-bar">
+            <span>+12025551003</span>
+            <span>Name Placeholder</span>
+            <span>Group Placeholder</span>
+        </div>
+        <div class="message-window" id="messageWindow-12025551003">
+            <!-- Messages will appear here -->
+        </div>
+        <div class="input-area">
+            <input type="text" id="messageInput-3" placeholder="Enter message">
+            <button id="sendButton-3">Send</button>
+             <select id="recipientSelect-3">
+                <option value="armorer">armorer</option>
+                <option value="medic">medic</option>
+                <option value="natloff">natloff</option>
+            </select>
+        </div>
+    </div>
+
+
+
+
+
+
     <script>
         const MEDIC_NUMBER = '+13127577223';
         const ARMORER_NUMBER = '+17542276679';
         const NATLOFF_NUMBER = '+16504803067';
-        const SIMULATOR_NUMBER = '+12025551001';
 
-        document.addEventListener('DOMContentLoaded', function () {
-            const messageInput = document.getElementById('messageInput');
-            const sendButton = document.getElementById('sendButton');
-            const messageWindow = document.getElementById('messageWindow');
-            const recipientSelect = document.getElementById('recipientSelect');
+        function setupSimulator(simulatorElement) {
+            const simulatorId = simulatorElement.id;
+            const simulatorNumber = '+' + simulatorId.split('-')[1]; // Extract number and prepend +1
+
+            const messageInput = simulatorElement.querySelector('input[type="text"]');
+            const sendButton = simulatorElement.querySelector('button');
+            const messageWindow = simulatorElement.querySelector('.message-window');
+            const recipientSelect = simulatorElement.querySelector('select');
+
+            // Fetch and display the name for this simulator
+            fetch(`/get_name?phoneNumber=${simulatorNumber}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.name) {
+                        const nameSpan = simulatorElement.querySelector('.title-bar span:nth-child(2)');
+                        nameSpan.textContent = data.name;
+                    }
+                })
+                .catch(error => console.error('Error fetching name:', error));
 
             sendButton.addEventListener('click', function () {
                 const messageText = messageInput.value;
@@ -124,43 +200,80 @@
                     }
 
                     const requestData = {
-                        'From': SIMULATOR_NUMBER,
-                        'To': recipientNumber,
+                        'From': simulatorNumber, // Use the specific simulator number
                         'Body': messageText
                     };
 
                     const formData = new URLSearchParams(requestData).toString();
 
                     fetch('/webhook', {
-                      method: 'POST',
-                      headers: {
-                        'Content-Type': 'application/x-www-form-urlencoded',
-                      },
-                      body: formData,
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/x-www-form-urlencoded',
+                        },
+                        body: formData,
                     })
-                      .then(response => {
-                        if (response.ok) {
-                          displaySentMessage(messageText);
-                        } else {
-                          console.error('Error:', response.statusText);
-                        }
-                      })
-                      .catch(error => {
-                        console.error('Error:', error);
-                      });
-                    
-                    messageInput.value = '';
-                  }
-            });
-        });
-            function displaySentMessage(message) {
+                        .then(response => {
+                            if (response.ok) {
+                                console.log("ok path")
+                                return response.text(); // Parse response as text
+                            } else {
+                                console.error('Error:', response.statusText);
+                                return Promise.reject(new Error(response.statusText));
+                            }
+                        })
+                        .then(twilioResponseText => {
+                            console.log("twilioResponseText:", twilioResponseText);
+
+                            // Parse the TwiML response
+                            const parser = new DOMParser();
+                            const xmlDoc = parser.parseFromString(twilioResponseText, "text/xml");
+                            const messageElement = xmlDoc.querySelector('Message');
+
+                            if (messageElement) {
+                                const messageBody = messageElement.textContent;
+                                const senderName = messageElement.getAttribute('from_') || 'Unknown Sender'; // Get the 'from_' attribute or default
+                                displayMessage(messageBody, messageWindow, false, senderName); // Display the received message
+                            }
+                        })
+                        .catch(error => {
+                            console.error('Error:', error);
+                        });
+
+        function displaySentMessage(message, messageWindowElement) {
             const messageDiv = document.createElement('div');
-            messageDiv.classList.add('message', 'received');
+            messageDiv.classList.add('message', 'sent'); // Mark as sent
             messageDiv.textContent = message;
-            messageWindow.appendChild(messageDiv);
+            messageWindowElement.appendChild(messageDiv);
+             messageWindowElement.scrollTop = messageWindowElement.scrollHeight; // Auto-scroll to the latest message
         }
+            messageInput.value = '';
+        }
+    });
+}
+
+        document.addEventListener('DOMContentLoaded', function () {
+            const simulatorContainers = document.querySelectorAll('.container');
+            simulatorContainers.forEach(setupSimulator);
+
+             // This function is now less likely to be needed if your webhook sends TwiML back
+             // to the originating simulator with the broadcast message content.
+             // However, it's kept here in case you have other ways of sending messages to simulators
+             // that don't go through the webhook's TwiML response for the sender.
+            window.displayReceivedMessage = function(phoneNumber, message, senderName = null) {
+                const simulatorElement = document.getElementById('simulator-' + phoneNumber.replace('+',''));
+                if (simulatorElement) {
+                    const messageWindowElement = simulatorElement.querySelector('.message-window');
+                     displayMessage(message, messageWindowElement, false, senderName);
+                } else {
+                    console.warn('Simulator element not found for phone number:', phoneNumber);
+                }
+            };
+        });
+
+
+
+
     </script>
-    
-    
 </body>
 </html>
