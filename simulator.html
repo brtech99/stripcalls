@@ -171,22 +171,13 @@
             const messageWindow = simulatorElement.querySelector('.message-window');
             const recipientSelect = simulatorElement.querySelector('select');
 
-            // Fetch and display the name for this simulator
-            fetch(`/get_name?phoneNumber=${simulatorNumber}`)
-                .then(response => response.json())
-                .then(data => {
-                    if (data.name) {
-                        const nameSpan = simulatorElement.querySelector('.title-bar span:nth-child(2)');
-                        nameSpan.textContent = data.name;
-                    }
-                })
-                .catch(error => console.error('Error fetching name:', error));
-
             sendButton.addEventListener('click', function () {
                 const messageText = messageInput.value;
                 if (messageText.trim() !== '') {
                     const selectedRecipient = recipientSelect.value;
                     let recipientNumber;
+
+                    // Determine the 'To' number based on the selected recipient group
                     switch (selectedRecipient) {
                         case 'medic':
                             recipientNumber = MEDIC_NUMBER;
@@ -198,12 +189,16 @@
                             recipientNumber = NATLOFF_NUMBER;
                             break;
                     }
+                    if (!recipientNumber) {
+                        console.error("No recipient number determined.");
+                        return; // Exit if no recipient number found
+                    }
 
                     const requestData = {
                         'From': simulatorNumber, // Use the specific simulator number
-                        'Body': messageText
-                    };
-
+                        'Body': messageText,
+                        'To': recipientNumber // Include the selected recipient group
+                    }
                     const formData = new URLSearchParams(requestData).toString();
 
                     fetch('/webhook', {
@@ -215,62 +210,67 @@
                     })
                         .then(response => {
                             if (response.ok) {
-                                console.log("ok path")
-                                return response.text(); // Parse response as text
+                                return response.json(); // Parse response as JSON
                             } else {
                                 console.error('Error:', response.statusText);
                                 return Promise.reject(new Error(response.statusText));
                             }
                         })
-                        .then(twilioResponseText => {
-                            console.log("twilioResponseText:", twilioResponseText);
-
-                            // Parse the TwiML response
-                            const parser = new DOMParser();
-                            const xmlDoc = parser.parseFromString(twilioResponseText, "text/xml");
-                            const messageElement = xmlDoc.querySelector('Message');
-
-                            if (messageElement) {
-                                const messageBody = messageElement.textContent;
-                                const senderName = messageElement.getAttribute('from_') || 'Unknown Sender'; // Get the 'from_' attribute or default
-                                displayMessage(messageBody, messageWindow, false, senderName); // Display the received message
+                        .then(responseData => {
+                            console.log("Response Data:", responseData);
+                            displaySentMessage(messageText, messageWindow); // Display the sent message in the sender's window
+                            // Handle simulator messages
+                            if (responseData.simulator_messages && responseData.simulator_messages.length > 0) {
+                                responseData.simulator_messages.forEach(simMessage => {
+                                    // Find the message window for the recipient simulator
+                                    const recipientSimulatorElement = document.getElementById('simulator-' + simMessage.to.replace('+', ''));
+ displayReceivedMessageInWindow(simMessage.body, simMessage.to, simMessage.from_);
+                                });
                             }
                         })
                         .catch(error => {
                             console.error('Error:', error);
                         });
+                }
+                messageInput.value = '';
+            });
+        }
 
         function displaySentMessage(message, messageWindowElement) {
             const messageDiv = document.createElement('div');
-            messageDiv.classList.add('message', 'sent'); // Mark as sent
+            messageDiv.classList.add('message', 'sent');
+            messageDiv.textContent = message;
+            messageWindowElement.appendChild(messageDiv);
+            messageWindowElement.scrollTop = messageWindowElement.scrollHeight;
+        }
+
+        function displayReceivedMessage(message, messageWindowElement, senderName = null) {
+            const messageDiv = document.createElement('div');
+            messageDiv.classList.add('message', 'received'); // Mark as received
             messageDiv.textContent = message;
             messageWindowElement.appendChild(messageDiv);
              messageWindowElement.scrollTop = messageWindowElement.scrollHeight; // Auto-scroll to the latest message
         }
-            messageInput.value = '';
+
+        function displayReceivedMessageInWindow(message, phoneNumber, senderName = null) {
+ console.log("displayReceivedMessageInWindow called for phoneNumber:", phoneNumber);
+ // Find the correct simulator element by phone number
+ const simulatorElement = document.getElementById('simulator-' + phoneNumber.replace('+',''));
+ if (simulatorElement) {
+ console.log("Found simulator element:", simulatorElement.id);
+ // Find the message window within that simulator element
+ const messageWindowElement = simulatorElement.querySelector('.message-window');
+ // Display the received message
+ displayReceivedMessage(message, messageWindowElement, senderName);
+ } else {
+ console.warn('Simulator element not found for phone number:', phoneNumber);
+ }
         }
-    });
-}
 
         document.addEventListener('DOMContentLoaded', function () {
             const simulatorContainers = document.querySelectorAll('.container');
             simulatorContainers.forEach(setupSimulator);
-
-             // This function is now less likely to be needed if your webhook sends TwiML back
-             // to the originating simulator with the broadcast message content.
-             // However, it's kept here in case you have other ways of sending messages to simulators
-             // that don't go through the webhook's TwiML response for the sender.
-            window.displayReceivedMessage = function(phoneNumber, message, senderName = null) {
-                const simulatorElement = document.getElementById('simulator-' + phoneNumber.replace('+',''));
-                if (simulatorElement) {
-                    const messageWindowElement = simulatorElement.querySelector('.message-window');
-                     displayMessage(message, messageWindowElement, false, senderName);
-                } else {
-                    console.warn('Simulator element not found for phone number:', phoneNumber);
-                }
-            };
         });
-
 
 
 

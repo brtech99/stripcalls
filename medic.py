@@ -102,7 +102,7 @@ class ReceiveSMS(webapp.RequestHandler):
             smsSid = self.request.get('SmsSid').encode('ascii', 'ignore') #get SMS Id
             body = self.request.get('Body').encode('ascii', 'ignore') #get body of message
             body=body.translate(None,"'!@#$%^&*")
-            auth_token = '530e3c5c4084c062bd6e438873852a92'
+            auth_token = 'fpp'
             logging.debug(os.environ.get("TWILIO_AUTH_TOKEN"))
             #validator = RequestValidator(auth_token) #set up to check signature using our auth token
             url = "http://usfa-armory.appspot.com/rsms?"+self.request.query_string #create the string
