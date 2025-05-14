@@ -75,7 +75,7 @@
 </head>
 
 <body>
-    <div class="container" id="simulator-12025551000">
+    <div class="container" id="simulator-+12025551000">
         <div class="title-bar">
             <span>+12025551000</span>
             <span>Name Placeholder</span>
@@ -94,7 +94,7 @@
             </select>
         </div>
     </div>
-    <div class="container" id="simulator-12025551001">
+    <div class="container" id="simulator-+12025551001">
         <div class="title-bar">
             <span>+12025551001</span>
             <span>Name Placeholder</span>
@@ -113,7 +113,7 @@
             </select>
         </div>
     </div>
-     <div class="container" id="simulator-12025551002">
+     <div class="container" id="simulator-+12025551002">
         <div class="title-bar">
             <span>+12025551002</span>
             <span>Name Placeholder</span>
@@ -132,7 +132,7 @@
             </select>
         </div>
     </div>
-     <div class="container" id="simulator-12025551003">
+     <div class="container" id="simulator-+12025551003">
         <div class="title-bar">
             <span>+12025551003</span>
             <span>Name Placeholder</span>
@@ -162,10 +162,33 @@
         const ARMORER_NUMBER = '+17542276679';
         const NATLOFF_NUMBER = '+16504803067';
 
-        function setupSimulator(simulatorElement) {
-            const simulatorId = simulatorElement.id;
-            const simulatorNumber = '+' + simulatorId.split('-')[1]; // Extract number and prepend +1
+        async function fetchAndDisplayUserInfo(simulatorElement, phoneNumber) {
+            try {
+                const response = await fetch(`/get_name?phoneNumber=${encodeURIComponent(phoneNumber)}`);
+                if (response.ok) {
+                    const userData = await response.json();
+                    const titleBarSpans = simulatorElement.querySelectorAll('.title-bar span');
+                    if (titleBarSpans.length >= 3) {
+                        // Update name
+                        titleBarSpans[1].textContent = userData.name || 'Unknown User';
 
+                        // Update groups
+                        if (userData.groups && userData.groups.length > 0) {
+                            titleBarSpans[2].textContent = userData.groups.join(', ');
+                        } else {
+                            titleBarSpans[2].textContent = 'No Groups';
+                        }
+                    }
+                } else {
+                    console.error('Error fetching user info:', response.statusText);
+                }
+            } catch (error) {
+                console.error('Error fetching user info:', error);
+            }
+        }
+
+        function setupSimulator(simulatorElement) {
+            const simulatorNumber = simulatorElement.querySelector('.title-bar span:first-child').textContent;
             const messageInput = simulatorElement.querySelector('input[type="text"]');
             const sendButton = simulatorElement.querySelector('button');
             const messageWindow = simulatorElement.querySelector('.message-window');
@@ -254,8 +277,8 @@
 
         function displayReceivedMessageInWindow(message, phoneNumber, senderName = null) {
  console.log("displayReceivedMessageInWindow called for phoneNumber:", phoneNumber);
- // Find the correct simulator element by phone number
- const simulatorElement = document.getElementById('simulator-' + phoneNumber.replace('+',''));
+ // Find the correct simulator element by phone number. The HTML IDs are now like simulator-+12025551003
+ const simulatorElement = document.getElementById('simulator-' + phoneNumber);
  if (simulatorElement) {
  console.log("Found simulator element:", simulatorElement.id);
  // Find the message window within that simulator element
@@ -270,9 +293,12 @@
         document.addEventListener('DOMContentLoaded', function () {
             const simulatorContainers = document.querySelectorAll('.container');
             simulatorContainers.forEach(setupSimulator);
+             // Fetch and display user info for each simulator on load
+             simulatorContainers.forEach(container => {
+                const phoneNumber = container.querySelector('.title-bar span:first-child').textContent;
+                fetchAndDisplayUserInfo(container, phoneNumber);
+            });
         });
-
-
 
     </script>
 </body>
