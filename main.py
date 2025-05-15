@@ -120,13 +120,14 @@ def send_message_to_group(sender_identity, sender_group, original_message, from_
         for member in group_members:
             member_name = member.get('name')
             member_phone = member.get('phonNbr')
+            menber_active = member.get('active')
             # Prepend +1 if the phone number is a 10-digit number
             if member_phone and len(member_phone) == 10 and member_phone.isdigit():
                 member_phone = '+1' + member_phone
             logger.debug(f"Processing member: Name: {member_name}, Phone: {member_phone}")
             # Construct the outgoing message
             outgoing_message = f"{sender_identity}: {original_message}" 
-            if member_name == sender_identity:
+            if (member_name == sender_identity) or not(member_active):
                 logger.debug(f"Skipping sending message to sender: {sender_identity}")
             else:
                 send_single_message(member_phone, outgoing_message, from_number, all_simulator_messages, twilio_client)

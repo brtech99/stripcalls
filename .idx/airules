@@ -1,0 +1,41 @@
+This Google Cloud AppEngine project, StripCallS is used by referees (‘refs’) to request help from support groups (armorers, medics, national office team members) at a fencing tournament.  Communication is by SMS using Twilio.  Each of the three support teams (armorer, medic, natloff) has a phone number which is Twilio-enabled.  When messages are sent to those numbers, the app receives them -- all the Twilio numbers call the same webhook route in the app.  We know which support team is requested by the phone number it’s received on (to_number). 
+The app is written primarily in Python using Flask. Web pages use html and javascript.
+There is a database used by this app.  The database is actually owned by another project in AppEngine.  The IAM permissions to access the database are set up and working.  The other project’s name is “usfa-armory”, which is not owned by the same organization as this project.  We use datastore to access the database.  The database has two data kinds.  One, numbr, holds user records: name, phone number, which team (group) they are a part of, etc.  
+Users can be part of multiple teams.
+There are two properties in numbr, “super” (i.e superuser) and “admin” which give users with those properties privileges in the app.
+Phone numbers in the app are currently stored in the datastore exclusively as 10 digit numbers.  This is required for backwards compatibility with the prior versions of the app.  Some day, we will change to allow international numbers.  Within the app, we use international numbers.  That means we have to add a “+1” prefix to phone numbers when we retrieve them from the datastore, and we have to remove the “+1” prefix when we store them in the datastore.  On input, several different forms are supported, which are all converted to international (G.164) format for use within the app.
+Presently, the name of a user is a single token.
+The numbr record is 
+'phonNbr': string, 10 digit phone number
+'name': string, user’s name
+'armorer': Boolean, if true, user is a part of the armorer group
+'medic': Boolean, if true, user is a part of the medic group
+'natloff': Boolean, if true, user is a part of the national office group
+'ref': Boolean, if true, user is a referee
+'active': Boolean, if true, user gets messages sent to the group, 
+if false, no messages are sent
+'super': Boolean, if true, user is a superuser
+'admin': Boolean, if true, user is an admin
+'ucName': uppercase version of name
+
+The other kind of data in the datastore is a glbvar.  A message that is not from a member of the group it’s meant for gets a reply number. This is a number from 1-4 and that number is included in the outgoing message to every member of the group.  To maintain this number, the glbvar record in the datastore is used. This record has an index: each group has one of these records, and the index (idx) specifies which group.  The record has a list of telephone numbers as strings (cb) and a pointer to the last record entered (cbp).  The pointer ranges from 1-4.  When a message is received from someone who is not a member of the intended group, cpb is incremented, wrapped around to 1 if needed, and the phone number of the sender is recorded in cb[cbp].  
+The glbvar record is:
+idx = Integer
+cbp = Integer
+cb = List of strings
+
+There are commands (+1, +2, +3, +4) which are used to reply.  When a reply command is received, which is restricted to members of the group associated with the to_number (as well as admins and superusers), the cb list is referenced for the appropriate entry, and then the rest of the command body is a message that is sent to the group as well as the phone number in cb.  That means the original sender of the message gets the reply as well as the members of the group the original message was sent to.
+Refs may or maybe not not be registered in the database. The only difference is whether we know their name or not. Sometimes I call an unregistered ref a guest but they are treated alike. When a message is received, we query the database with the from_number and if we have a hit, then we know the name of the ref.
+It’s possible for a member of any group (armorer, medic, natloff) to send a message. If the sender is not a member of the group that the message is intended for, we treat that message the same as we would a registered ref. If the sender is a member of the group the message is sent to, processing is slightly different.   In that case, we don’t include the reply number, we just send the message to every member of the group except the sender.  
+Commands are messages with ‘+’ as the first character of the message.  Commands have parameters, which are space delimited.  There is special processing for telephone numbers.  We allow a parameter which is a telephone number to take one of several forms, +<digits>, <10digits>,ddd-ddd-dddd, (ddd) ddd-ddd.  The latter form has a space in it, so the command parser has to look for it.  When a phone number is a parameter of a command, it is always the last parameter.
+Many commands are restricted to users who have the ‘admin’ or ‘super’ flag set.  There are commands that set the admin flag on and off, which can only be used by super users.
+Commands exist to create numbr entries.  These commands are group specific: assuming parameter checking passes, an existing record is updated or a new record created, that has a group flag set to true.  For example, the +medic command creates a new record that has the ‘medic’ flag set true or updates an existing record to set the medic flag true.  Generally, these commands can change the phone number of an existing record that matches the name parameter in the command, but cannot change the name of an existing record that matches the phone number parameter.  
+One more flag in numbr is the ‘active’ flag.  Commands exist to set and unset this flag.  When set, when group messages are sent, ‘active’, when false, causes the messages to be skipped.  This allows a user to temporarily block the system from sending messages to her.
+
+While this app does not use ucName, it has to be set correctly when creating a new entry.
+
+To test this app, there is a web based simulator.  This page mimics several users with phone numbers that are in the range +12025551000 to +12025551009.  The simulator has a series of blocks, each of which is a simulation of one phone number.  The block shows messages sent to the number, and can simulate sending a message to one of the three Twilio numbers.  Each simulator block has a scrolling window of messages sent and received by the simulated number.  An input text block and “send” button, along with a drop down that selects which of the group Twilio numbers the simulated message should be sent to.  The simulator makes use of a get_name route in the app that obtains the name and flag state of a simulated number, which is displayed on a title bar of the simulator block.
+
+
+
+
