@@ -42,10 +42,9 @@ MEDIC_TWILIO_NUMBER = os.getenv('MEDIC_TWILIO_NUMBER')
 NATLOFF_TWILIO_NUMBER = os.getenv('NATLOFF_TWILIO_NUMBER')
 
 # Define the range of simulator numbers
-SIMULATOR_NUMBER_PREFIX = '+1202555100'
-SIMULATOR_NUMBER_RANGE_START = 0
-SIMULATOR_NUMBER_RANGE_END = 9
-
+SIMULATOR_NUMBER_PREFIX = os.getenv('SIMULATOR_NUMBER_PREFIX', '+1202555100')
+SIMULATOR_NUMBER_START_DIGIT = int(os.getenv('SIMULATOR_NUMBER_START_DIGIT', '0'))
+SIMULATOR_NUMBER_END_DIGIT = int(os.getenv('SIMULATOR_NUMBER_END_DIGIT', '9'))
 
 def is_simulator_number(phone_number):
     """Checks if a phone number is a valid simulator number (length 12, correct prefix, last char is a digit)."""
@@ -53,11 +52,11 @@ def is_simulator_number(phone_number):
     cleaned_number = phone_number.lstrip('+1')
 
     if len(cleaned_number) == 10 and cleaned_number.startswith('202555100'):
-        try:
-            int(cleaned_number[-1]) # Check if the last character is a digit (0-9)
-            return 0 <= int(cleaned_number[-1]) <= 9
-        except ValueError:
-            pass # Not a digit
+        if phone_number.startswith(SIMULATOR_NUMBER_PREFIX):
+            suffix = phone_number[len(SIMULATOR_NUMBER_PREFIX):]
+        if len(suffix) == 1 and suffix.isdigit():
+            digit = int(suffix)
+        return SIMULATOR_NUMBER_START_DIGIT <= digit <= SIMULATOR_NUMBER_END_DIGIT
     return False # Doesn't match the pattern
 
 
@@ -120,7 +119,7 @@ def send_message_to_group(sender_identity, sender_group, original_message, from_
         for member in group_members:
             member_name = member.get('name')
             member_phone = member.get('phonNbr')
-            menber_active = member.get('active')
+            member_active = member.get('active')
             # Prepend +1 if the phone number is a 10-digit number
             if member_phone and len(member_phone) == 10 and member_phone.isdigit():
                 member_phone = '+1' + member_phone
@@ -135,6 +134,37 @@ def send_message_to_group(sender_identity, sender_group, original_message, from_
     except Exception as e:
         logger.error(f"Error in send_message_to_group: {e}", exc_info=True)
 
+
+# Define parse_phone_number function at the module level
+def parse_phone_number(phone_str):
+    """Parses and validates a phone number from a string, returning a cleaned E.164 number or None."""
+    # Remove common separators (hyphens, parentheses, whitespace)
+    cleaned_number = re.sub(r"[-()\s]", "", phone_str)
+
+    if not cleaned_number:
+        return None
+
+    # Check for a leading '+'
+    if cleaned_number.startswith("+"):
+        # Assume international or already E.164, return as is after removing other non-digits
+        # Further validation for E.164 US number (+1 followed by 10 digits)
+        if cleaned_number.startswith("+1") and len(cleaned_number) == 12 and cleaned_number[1:].isdigit():
+            logger.info(f"Parsed as E.164 US number: {cleaned_number}")
+            return cleaned_number
+        elif cleaned_number[1:].isdigit(): # It's a valid international number (starts with + and followed by digits)
+            logger.info(f"Parsed as international number: {cleaned_number}")
+            return cleaned_number
+        else: # Starts with + but not a valid E.164 or international format
+            logger.info(f"Bad phone number syntax in parse_phone_number {phone_str}")
+            return None
+    else:
+        # Rule 2: Exactly 10 digits
+        if len(cleaned_number) == 10 and cleaned_number.isdigit():
+            logger.info(f"Parsed as US number: +1{cleaned_number}")
+            return "+1" + cleaned_number
+            # Add other formats if necessary
+
+    return None # Didn't match any recognized format
 
 # Initialize Google Cloud Datastore client
 datastore_client = None
@@ -228,35 +258,6 @@ def webhook():
         else:
             logger.debug(f"Sender number {from_number} not found")
 
-    # Define parse_phone_number function inside webhook or import it if defined elsewhere
-    def parse_phone_number(phone_str):
-        """Parses and validates a phone number from a string, returning a cleaned E.164 number or None."""
-        # Remove common separators (hyphens, parentheses, whitespace)
-        cleaned_number = re.sub(r"[-()\s]", "", phone_str)
-
-        if not cleaned_number:
-            return None
-
-        # Check for a leading '+'
-        if cleaned_number.startswith("+"):
-            # Assume international or already E.164, return as is after removing other non-digits
-            # Further validation for E.164 US number (+1 followed by 10 digits)
-            if cleaned_number.startswith("+1") and len(cleaned_number) == 12 and cleaned_number[1:].isdigit():
-                logger.info(f"Parsed as E.164 US number: {cleaned_number}")
-                return cleaned_number
-            elif cleaned_number[1:].isdigit(): # It's a valid international number (starts with + and followed by digits)
-                 logger.info(f"Parsed as international number: {cleaned_number}")
-                 return cleaned_number
-            else: # Starts with + but not a valid E.164 or international format
-                 return None
-        else:
-        # Rule 2: Exactly 10 digits
-            if len(cleaned_number) == 10 and cleaned_number.isdigit():
-                 logger.info(f"Parsed as US number: +1{cleaned_number}")
-                 return "+1" + cleaned_number
-            # Add other formats if necessary
-
-            return None # Didn't match any recognized format
 
     all_simulator_messages = [] # Initialize a list to collect all simulator messages
     # The rest of the webhook function follows...
@@ -279,8 +280,12 @@ def webhook():
             # Activate the sender
                 if sender_entity:
                     sender_entity['active'] = True
-                    datastore_client.put(sender_entity)
-                    command_messages.append({'to': from_number, 'body': "Your account has been activated."})
+                    try:
+                        datastore_client.put(sender_entity)
+                        command_messages.append({'to': from_number, 'body': "Your account has been activated."})
+                    except Exception as e:
+                        logger.error(f"Error activating sender: {e}", exc_info=True)
+                        command_messages.append({'to': from_number, 'body': 'An error occurred while activating your account.'})
                 else:
                     command_messages.append({'to': from_number, 'body': "Could not activate your account. Please register first."})
             elif len(parameters) == 1:
@@ -288,16 +293,20 @@ def webhook():
                 if not is_authorized_command_user:
                     command_messages.append({'to': from_number, 'body': "You are not authorized to activate other users."})
                 else:
-                    name_to_activate = parameters[0]
-                    entity_to_activate, found = find_entity_by_name(datastore_client, name_to_activate)
+                    try:
+                        name_to_activate = parameters[0]
+                        entity_to_activate, found = find_entity_by_name(datastore_client, name_to_activate)
 
-                    if entity_to_activate:
-                        entity_to_activate['active'] = True
-                        datastore_client.put(entity_to_activate)
-                        command_messages.append({'to': from_number, 'body': f"Account for {name_to_activate} has been activated."})
-                    # Optionally notify the activated user: send_single_message(entity_to_activate.get('phonNbr'), "Your account has been activated by an admin.", to_number, all_simulator_messages, twilio_client)
-                    else:
-                        command_messages.append({'to': from_number, 'body': f"User '{name_to_activate}' not found."})
+                        if entity_to_activate:
+                            entity_to_activate['active'] = True
+                            datastore_client.put(entity_to_activate)
+                            command_messages.append({'to': from_number, 'body': f"Account for {name_to_activate} has been activated."})
+                            # Optionally notify the activated user: send_single_message(entity_to_activate.get('phonNbr'), "Your account has been activated by an admin.", to_number, all_simulator_messages, twilio_client)
+                        else:
+                            command_messages.append({'to': from_number, 'body': f"User '{name_to_activate}' not found."})
+                    except Exception as e:
+                        logger.error(f"Error activating user {name_to_activate}: {e}", exc_info=True)
+                        command_messages.append({'to': from_number, 'body': f'An error occurred while activating user {name_to_activate}.'})
             else:
                 command_messages.append({'to': from_number, 'body': "Invalid syntax for +activate. Usage: +activate [name]"})
 
@@ -305,9 +314,13 @@ def webhook():
             if len(parameters) == 0:
             # Deactivate the sender
                 if sender_entity:
-                    sender_entity['active'] = False
-                    datastore_client.put(sender_entity)
-                    command_messages.append({'to': from_number, 'body': "Your account has been deactivated."})
+                    try:
+                        sender_entity['active'] = False
+                        datastore_client.put(sender_entity)
+                        command_messages.append({'to': from_number, 'body': "Your account has been deactivated."})
+                    except Exception as e:
+                        logger.error(f"Error deactivating sender: {e}", exc_info=True)
+                        command_messages.append({'to': from_number, 'body': 'An error occurred while deactivating your account.'})
                 else:
                     command_messages.append({'to': from_number, 'body': "Could not deactivate your account. Please register first."})
             elif len(parameters) == 1:
@@ -315,165 +328,177 @@ def webhook():
                 if not is_authorized_command_user:
                     command_messages.append({'to': from_number, 'body': "You are not authorized to deactivate other users."})
                 else:
-                    name_to_deactivate = parameters[0]
-                    entity_to_deactivate, found = find_entity_by_name(datastore_client, name_to_deactivate)
+                    try:
+                        name_to_deactivate = parameters[0]
+                        entity_to_deactivate, found = find_entity_by_name(datastore_client, name_to_deactivate)
 
-                    if found:
-                        entity_to_deactivate['active'] = False
-                        datastore_client.put(entity_to_deactivate)
-                        command_messages.append({'to': from_number, 'body': f"Account for {name_to_deactivate} has been deactivated."})
-                    # Optionally notify the deactivated user: send_single_message(entity_to_deactivate.get('phonNbr'), "Your account has been deactivated by an admin.", to_number, all_simulator_messages, twilio_client)
-                    else:
-                        command_messages.append({'to': from_number, 'body': f"User '{name_to_deactivate}' not found."})
+                        if found:
+                            entity_to_deactivate['active'] = False
+                            datastore_client.put(entity_to_deactivate)
+                            command_messages.append({'to': from_number, 'body': f"Account for {name_to_deactivate} has been deactivated."})
+                        # Optionally notify the deactivated user: send_single_message(entity_to_deactivate.get('phonNbr'), "Your account has been deactivated by an admin.", to_number, all_simulator_messages, twilio_client)
+                        else:
+                            command_messages.append({'to': from_number, 'body': f"User '{name_to_deactivate}' not found."})
+                    except Exception as e:
+                        logger.error(f"Error deactivating user {name_to_deactivate}: {e}", exc_info=True)
+                        command_messages.append({'to': from_number, 'body': f'An error occurred while deactivating user {name_to_deactivate}.'})
             else:
                 command_messages.append({'to': from_number, 'body': "Invalid syntax for +deactivate. Usage: +deactivate [name]"})
-
+             
         elif command == "status":
             command_messages.append({'to': from_number, 'body': "Service is operational."})
         elif command in ["medic", "armorer", "natloff"]:
-            # Command to add or update a user    
-            phone_str = None  # Initialize phone_str
-            phone_number = None # Initialize phone_number
-            if len(parameters) < 2:
-                command_messages.append({'to': from_number, 'body': f"Invalid syntax for +{command}. Usage: +{command} [name] [phone]"})
-            else:
-                name = parameters[0]
-                if len(parameters) == 2:
-                    phone_str = parameters[1] # Correctly assign the single phone parameter
-                elif len(parameters) == 3:
-                    # handle phone number of the form (202) 555-1212 where space is a delimiter
-                    phone_str = parameters[1] + " " + parameters[2] # Correctly construct the phone string from two parameters
-                else:
+            try:
+                # Command to add or update a user
+                phone_str = None  # Initialize phone_str
+                phone_number = None # Initialize phone_number
+                if len(parameters) < 2:
                     command_messages.append({'to': from_number, 'body': f"Invalid syntax for +{command}. Usage: +{command} [name] [phone]"})
-                    # If syntax is invalid, we should not attempt to parse
-                    phone_str = None # Ensure phone_str is None if syntax is invalid
-
-                if phone_str: # Attempt to parse the phone number only if phone_str was successfully constructed
-                    phone_number = parse_phone_number(phone_str)
-            # logger.debug(f"Parsed phone number from command: {phone_number}, format: {phone_format}") # Removed undefined variable phone_format
-
-                if not phone_number:
-                    logger.debug(f"Phone number parsing failed for command: {phone_str}")
-                    command_messages.append({'to': from_number, 'body': f"Could not parse phone number: {phone_str}. Please use a valid format (e.g., 1234567890, +11234567890, (123) 456-7890, 123-456-7890)."})
                 else:
-                    entity_by_name, name_found = find_entity_by_name(datastore_client, name)
-                    entity_by_number, number_found = find_entity_by_number(datastore_client, phone_number)
+                    name = parameters[0]
+                    if len(parameters) == 2:
+                        phone_str = parameters[1] # Correctly assign the single phone parameter
+                    elif len(parameters) == 3:
+                        # handle phone number of the form (202) 555-1212 where space is a delimiter
+                        phone_str = parameters[1] + " " + parameters[2] # Correctly construct the phone string from two parameters
+                    else:
+                        command_messages.append({'to': from_number, 'body': f"Invalid syntax for +{command}. Usage: +{command} [name] [phone]"})
+                        # If syntax is invalid, we should not attempt to parse
+                        phone_str = None # Ensure phone_str is None if syntax is invalid
 
-                    if name_found:
-                        # Name exists
-                        stored_phone_number_in_name_entity = entity_by_name.get('phonNbr')
-                        # Ensure stored_phone_number_in_name_entity is in a comparable format (with +1 if it's a US number)
-                        if stored_phone_number_in_name_entity and len(stored_phone_number_in_name_entity) == 10 and stored_phone_number_in_name_entity.isdigit():
-                            stored_phone_number_in_name_entity = '+1' + stored_phone_number_in_name_entity
+                    if phone_str: # Attempt to parse the phone number only if phone_str was successfully constructed
+                        phone_number = parse_phone_number(phone_str)
+                # logger.debug(f"Parsed phone number from command: {phone_number}, format: {phone_format}") # Removed undefined variable phone_format
 
-                        if stored_phone_number_in_name_entity == phone_number:
-                            # Name and number match an existing entry, update groups
-                            entity_by_name[command] = True
-                            entity_by_name['phonNbr'] = phone_number.lstrip('+1')
-                            datastore_client.put(entity_by_name)
-                            command_messages.append({'to': from_number, 'body': f"{name} with number {phone_number} is now a {command}."})
-                            # Notify the user
-                            command_messages.append({'to': phone_number, 'body': f"You have been added to the USA Fencing StripCall app as a {command}."})
+                    if not phone_number:
+                        logger.debug(f"Phone number parsing failed for command: {phone_str}")
+                        command_messages.append({'to': from_number, 'body': f"Could not parse phone number: {phone_str}. Please use a valid format (e.g., 1234567890, +11234567890, (123) 456-7890, 123-456-7890)."})
+                    else:
+                        entity_by_name, name_found = find_entity_by_name(datastore_client, name)
+                        entity_by_number, number_found = find_entity_by_number(datastore_client, phone_number)
+
+                        if name_found:
+                            # Name exists
+                            stored_phone_number_in_name_entity = entity_by_name.get('phonNbr')
+                            # Ensure stored_phone_number_in_name_entity is in a comparable format (with +1 if it's a US number)
+                            if stored_phone_number_in_name_entity and len(stored_phone_number_in_name_entity) == 10 and stored_phone_number_in_name_entity.isdigit():
+                                stored_phone_number_in_name_entity = '+1' + stored_phone_number_in_name_entity
+
+                            if stored_phone_number_in_name_entity == phone_number:
+                                # Name and number match an existing entry, update groups
+                                entity_by_name[command] = True
+                                entity_by_name['phonNbr'] = phone_number.lstrip('+1')
+                                datastore_client.put(entity_by_name)
+                                command_messages.append({'to': from_number, 'body': f"{name} with number {phone_number} is now a {command}."})
+                                # Notify the user
+                                command_messages.append({'to': phone_number, 'body': f"You have been added to the USA Fencing StripCall app as a {command}."})
+                            else:
+                                # Name exists, number differs. Check if the provided number exists elsewhere.\n
+                                if number_found:
+                                    # Provided number exists with another name
+                                    other_name = entity_by_number.get('name')
+                                    command_messages.append({'to': from_number, 'body': f"Error: That telephone number is associated with {other_name}."})
+                                else:
+                                    # Name exists, numbers differ, new number not found elsewhere. Update the existing record's phone number and groups.\n
+                                    entity_by_name[command] = True
+                                    entity_by_name['phonNbr'] = phone_number.lstrip('+1')
+                                    datastore_client.put(entity_by_name)
+                                    command_messages.append({'to': from_number, 'body': f"{name} with new number {phone_number} is now a {command}."})
+                                    # Notify the user
+                                    command_messages.append({'to': phone_number, 'body': f"You have been added to the USA Fencing StripCall app as a {command}.`"})
                         else:
-                            # Name exists, number differs. Check if the provided number exists elsewhere.
+                            # No entity found with the same name. Check if the provided number exists elsewhere.
                             if number_found:
                                 # Provided number exists with another name
                                 other_name = entity_by_number.get('name')
                                 command_messages.append({'to': from_number, 'body': f"Error: That telephone number is associated with {other_name}."})
                             else:
-                                # Name exists, numbers differ, new number not found elsewhere. Update the existing record's phone number and groups.
-                                entity_by_name[command] = True
-                                entity_by_name['phonNbr'] = phone_number.lstrip('+1')
+                                # Neither name nor number exists. Create a new record.
+                                logger.debug(f"Neither name '{name}' nor number '{phone_number}' found. Creating new entity.")
+                                key = datastore_client.key('numbr')
+                                new_entity = datastore.Entity(key)
+                                new_entity.update({
+                                    'phonNbr': phone_number.lstrip('+1'),
+                                    'name': name,
+                                    'armorer': command == 'armorer',
+                                    'ref': False, # Assuming 'ref' is not set by these commands
+                                    'super': False, # Assuming 'super' is not set by these commands
+                                    'active': True, # Assuming new entries are active
+                                    'admin': False, # Assuming 'admin' is not set by these commands
+                                    'ucName': name.upper(), # Assuming uppercase name for ucName
+                                    'medic': command == 'medic',
+                                    'natloff': command == 'natloff'
+                                })
+                                datastore_client.put(new_entity)
+                                logger.debug(f"New entity created for {name} with number {phone_number}")
+                                command_messages.append({'to': from_number, 'body': f"{name} with number {phone_number} is now a {command}`."})
+                                command_messages.append({'to': phone_number, 'body': f"You have been added to the USA Fencing StripCall app as a {command}.`"})
+            except Exception as e:
+                logger.error(f"Error processing {command} command: {e}", exc_info=True)
+                command_messages.append({'to': from_number, 'body': f'An error occurred while processing the +{command} command.'})
+        elif command == "ref":
+            try:
+                if len(parameters) != 1:
+                    command_messages.append({'to': from_number, 'body': "Invalid syntax for +ref. Usage: +ref [name]"})
+                else:
+                    name = parameters[0]
+
+                    entity_by_name, name_found = find_entity_by_name(datastore_client, name)
+                    entity_by_number, number_found = find_entity_by_number(datastore_client, from_number)
+
+                    if entity_by_name:
+                        # Name exists
+                        if entity_by_name.get('ref', False):
+                            # Entry is a ref
+                            stored_phone_number_in_entity = entity_by_name.get('phonNbr')
+                            # Need to compare stored number (without +1) with incoming number (with +1 potentially)
+                            if stored_phone_number_in_entity != from_number.lstrip('+1'):
+                                # Phone number is different, update it
+                                entity_by_name['phonNbr'] = from_number.lstrip('+1')
                                 datastore_client.put(entity_by_name)
-                                command_messages.append({'to': from_number, 'body': f"{name} with new number {phone_number} is now a {command}."})
-                                # Notify the user
-                                command_messages.append({'to': phone_number, 'body': f"You have been added to the USA Fencing StripCall app as a {command}."})
-                    else:
-                        # No entity found with the same name. Check if the provided number exists elsewhere.
-                        if number_found:
-                            # Provided number exists with another name
-                            other_name = entity_by_number.get('name')
-                            command_messages.append({'to': from_number, 'body': f"Error: That telephone number is associated with {other_name}."})
+                                command_messages.append({'to': from_number, 'body': f"Phone number updated for ref {name}."})
+                            else:
+                                # Entry is already present as a ref with the same number
+                                command_messages.append({'to': from_number, 'body': f"Entry for {name} is already present as a ref."})
                         else:
-                            # Neither name nor number exists. Create a new record.
-                            logger.debug(f"Neither name '{name}' nor number '{phone_number}' found. Creating new entity.")
+                            # Name exists, but not a ref
+                            command_messages.append({'to': from_number, 'body': f"Entry for {name} exists but cannot be a ref."})
+                    else:
+                        # Name does not exist. Check if phone number exists with another entity.\n
+                        if entity_by_number:
+                             # Phone number exists with a different name
+                            other_name = entity_by_number.get('name')
+                            command_messages.append({'to': from_number, 'body': f"Phone number already in use with name {other_name}."})
+                        else:
+                            # Neither name nor number exists. Create a new ref entry.
+                            logger.debug(f"Neither name '{name}' nor phone number '{from_number}' found. Creating new ref entry.")
                             key = datastore_client.key('numbr')
                             new_entity = datastore.Entity(key)
                             new_entity.update({
-                                'phonNbr': phone_number.lstrip('+1'),
+                                'phonNbr': from_number.lstrip('+1'),
                                 'name': name,
-                                'armorer': command == 'armorer',
-                                'ref': False, # Assuming 'ref' is not set by these commands
-                                'super': False, # Assuming 'super' is not set by these commands
+                                'ref': True,
+                                'admin': False,
+                                'armorer': False,
+                                'medic': False,
+                                'natloff': False,
+                                'super': False,
                                 'active': True, # Assuming new entries are active
-                                'admin': False, # Assuming 'admin' is not set by these commands
-                                'ucName': name.upper(), # Assuming uppercase name for ucName
-                                'medic': command == 'medic',
-                                'natloff': command == 'natloff'
+                                'ucName': name.upper() # Assuming uppercase name for ucName
                             })
                             datastore_client.put(new_entity)
-                            logger.debug(f"New entity created for {name} with number {phone_number}")
-                            command_messages.append({'to': from_number, 'body': f"{name} with number {phone_number} is now a {command}`."})
-                            command_messages.append({'to': phone_number, 'body': f"You have been added to the USA Fencing StripCall app as a {command}."})
-        elif command == "ref":
-            if len(parameters) != 1:
-                command_messages.append({'to': from_number, 'body': "Invalid syntax for +ref. Usage: +ref [name]"})
-            else:
-                name = parameters[0]
-
-                entity_by_name, name_found = find_entity_by_name(datastore_client, name)
-                entity_by_number, number_found = find_entity_by_number(datastore_client, from_number)
-
-                if entity_by_name:
-                    # Name exists
-                    if entity_by_name.get('ref', False):
-                        # Entry is a ref
-                        stored_phone_number_in_entity = entity_by_name.get('phonNbr')
-                        # Need to compare stored number (without +1) with incoming number (with +1 potentially)
-                        if stored_phone_number_in_entity != from_number.lstrip('+1'):
-                            # Phone number is different, update it
-                            entity_by_name['phonNbr'] = from_number.lstrip('+1')
-                            datastore_client.put(entity_by_name)
-                            command_messages.append({'to': from_number, 'body': f"Phone number updated for ref {name}."})
-                        else:
-                            # Entry is already present as a ref with the same number
-                            command_messages.append({'to': from_number, 'body': f"Entry for {name} is already present as a ref."})
-                    else:
-                        # Name exists, but not a ref
-                        command_messages.append({'to': from_number, 'body': f"Entry for {name} exists but cannot be a ref."})
-                else:
-                    # Name does not exist. Check if phone number exists with another entity.
-                    if entity_by_number:
-                         # Phone number exists with a different name
-                        other_name = entity_by_number.get('name')
-                        command_messages.append({'to': from_number, 'body': f"Phone number already in use with name {other_name}."})
-                    else:
-                        # Neither name nor number exists. Create a new ref entry.
-                        logger.debug(f"Neither name '{name}' nor phone number '{from_number}' found. Creating new ref entry.")
-                        key = datastore_client.key('numbr')
-                        new_entity = datastore.Entity(key)
-                        new_entity.update({
-                            'phonNbr': from_number.lstrip('+1'),
-                            'name': name,
-                            'ref': True,
-                            'admin': False,
-                            'armorer': False,
-                            'medic': False,
-                            'natloff': False,
-                            'super': False,
-                            'active': True, # Assuming new entries are active
-                            'ucName': name.upper() # Assuming uppercase name for ucName
-                        })
-                        datastore_client.put(new_entity)
-                        logger.debug(f"New ref entity created for {name}.")
-                        command_messages.append({'to': from_number, 'body': f"Ref entry created for {name}."})
+                            logger.debug(f"New ref entity created for {name}.")
+                            command_messages.append({'to': from_number, 'body': f"Ref entry created for {name}."})
+            except Exception as e:
+                logger.error(f"Error processing ref command: {e}", exc_info=True)
+                command_messages.append({'to': from_number, 'body': 'An error occurred while processing the +ref command.'})
 
         elif command == "remove":
             if len(parameters) != 1:
                 command_messages.append({'to': from_number, 'body': "Invalid syntax for +remove. Usage: +remove [name]"})
             elif not is_authorized_command_user:
                 command_messages.append({'to': from_number, 'body': "You are not authorized to deactivate other users."})
-            else: 
+            else:
                 name = parameters[0]
                 entity_to_delete, found = find_entity_by_name(datastore_client, name)
 
@@ -487,87 +512,109 @@ def webhook():
                         command_messages.append({'to': from_number, 'body': f"An error occurred while trying to remove the entry for {name}."})
                 else:
                     # Entry not found
-                    command_messages.append({'to': from_number, 'body': f"Entry for {name} not found."})        # list command - requires admin/super
+                    command_messages.append({'to': from_number, 'body': f"Entry for {name} not found."})
         elif command == "list":
-            if len(parameters) > 1: # Allow empty parameter for default list
-                command_messages.append({'to': from_number, 'body': "Invalid syntax for +list. Usage: +list [group] (where group is medic, armorer, or natloff)"})
-            elif not is_authorized_command_user:
-                command_messages.append({'to': from_number, 'body': "You are not authorized to deactivate other users."})
-            else: 
-                query = datastore_client.query(kind='numbr')
-                all_results = list(query.fetch())
-                logger.debug(f"All entries: {all_results}")
-                group_filter = "armorer" # Default to armorer if no parameter is provided
-                if len(parameters) == 1:
-                    param = parameters[0].lower()
-                    if param in ["medic", "armorer", "natloff", "ref"]: # Added ref to allowed list groups
-                        group_filter = param
-                        query = datastore_client.query(kind='numbr')
-                        query.add_filter(group_filter, '=', True)
-                        results = list(query.fetch())
-                        logger.debug(f"Number of entries found: {len(results)}")
-                        if results:
-                            entries = [f"{entity.get('name', 'Unknown')} {entity.get('phonNbr', 'N/A')}" for entity in results]
-                            command_messages.append({'to': from_number, 'body': f"List for {group_filter}:" + ", ".join(entries)})
+            try:
+                if len(parameters) > 1: # Allow empty parameter for default list
+                    command_messages.append({'to': from_number, 'body': "Invalid syntax for +list. Usage: +list [group] (where group is medic, armorer, or natloff)"})
+                elif not is_authorized_command_user:
+                    command_messages.append({'to': from_number, 'body': "You are not authorized to view user lists."}) # Adjusted message for clarity
+                else:
+                    query = datastore_client.query(kind='numbr')
+                    all_results = list(query.fetch())
+                    logger.debug(f"All entries: {all_results}")
+                    group_filter = "armorer" # Default to armorer if no parameter is provided
+                    if len(parameters) == 1:
+                        param = parameters[0].lower()
+                        if param in ["medic", "armorer", "natloff", "ref"]: # Added ref to allowed list groups
+                            group_filter = param
+                            query = datastore_client.query(kind='numbr')
+                            query.add_filter(group_filter, '=', True)
+                            results = list(query.fetch())
+                            logger.debug(f"Number of entries found: {len(results)}")
+                            if results:
+                                entries = [f"{entity.get('name', 'Unknown')} {entity.get('phonNbr', 'N/A')}" for entity in results]
+                                command_messages.append({'to': from_number, 'body': f"List for {group_filter}: " + ", ".join(entries)}) # Added space after colon
+                            else:
+                                command_messages.append({'to': from_number, 'body': f"No entries found for {group_filter}.`"}) # Added backtick for consistency
                         else:
-                            command_messages.append({'to': from_number, 'body': f"No entries found for {group_filter}."})
+                            command_messages.append({'to': from_number, 'body': f"Invalid group specified: {param}. Use medic, armorer, natloff, or ref."}) # Improved error message
                     else:
-                        command_messages.append({'to': from_number, 'body': f"Invalid group specified: {param}. Use medic, armorer, natloff, or ref."}) # Improved error message
+                         # If no parameter is provided, list all authorized users
+                         authorized_users = [f"{entity.get('name', 'Unknown')} {entity.get('phonNbr', 'N/A')}" for entity in all_results if entity.get('admin', False) or entity.get('super', False)]
+                         if authorized_users:
+                            command_messages.append({'to': from_number, 'body': "Authorized users: " + ", ".join(authorized_users)})
+                         else:
+                             command_messages.append({'to': from_number, 'body': "No authorized users found."})
+            except Exception as e:
+                logger.error(f"Error processing list command: {e}", exc_info=True)
+                command_messages.append({'to': from_number, 'body': 'An error occurred while processing the +list command.'})
 
         elif command == "admin":
-        # Grant admin privileges (requires super)
-            if not (sender_entity and sender_entity.get('super', False)):
-                command_messages.append({'to': from_number, 'body': "You are not authorized to grant admin privileges."})
-            elif len(parameters) != 1:
-                command_messages.append({'to': from_number, 'body': "Invalid syntax for +admin. Usage: +admin [name]"})
-            else:
-                name_to_admin = parameters[0]
-                query_by_name = datastore_client.query(kind='numbr')
-                entity_to_admin, found = find_entity_by_name(datastore_client, name_to_admin)
-
-                if found:
-                    entity_to_admin['admin'] = True
-                    datastore_client.put(entity_to_admin)
-                    command_messages.append({'to': from_number, 'body': f"{name_to_admin} is now an admin."})
-                    # Optionally notify the user: send_single_message(entity_to_admin.get('phonNbr'), "You have been granted admin privileges.", to_number, all_simulator_messages, twilio_client)
+            try:
+            # Grant admin privileges (requires super)
+                if not (sender_entity and sender_entity.get('super', False)):
+                    command_messages.append({'to': from_number, 'body': "You are not authorized to grant admin privileges."})
+                elif len(parameters) != 1:
+                    command_messages.append({'to': from_number, 'body': "Invalid syntax for +admin. Usage: +admin [name]"})
                 else:
-                    command_messages.append({'to': from_number, 'body': f"User '{name_to_admin}' not found."})
+                    name_to_admin = parameters[0]
+                    query_by_name = datastore_client.query(kind='numbr')
+                    entity_to_admin, found = find_entity_by_name(datastore_client, name_to_admin)
+
+                    if found:
+                        entity_to_admin['admin'] = True
+                        datastore_client.put(entity_to_admin)
+                        command_messages.append({'to': from_number, 'body': f"{name_to_admin} is now an admin."})
+                        # Optionally notify the user: send_single_message(entity_to_admin.get('phonNbr'), "You have been granted admin privileges.", to_number, all_simulator_messages, twilio_client)
+                    else:
+                        command_messages.append({'to': from_number, 'body': f"User '{name_to_admin}' not found."})
+            except Exception as e:
+                logger.error(f"Error processing admin command for {name_to_admin}: {e}", exc_info=True)
+                command_messages.append({'to': from_number, 'body': f'An error occurred while processing the +admin command for {name_to_admin}.'})
         elif command == "deadmin":
-            # Revoke admin privileges (requires super)
-            if not (sender_entity and sender_entity.get('super', False)):
-                command_messages.append({'to': from_number, 'body': "You are not authorized to revoke admin privileges."})
-            elif len(parameters) != 1:
-                command_messages.append({'to': from_number, 'body': "Invalid syntax for +deadmin. Usage: +deadmin [name]"})
-            else:
-                name_to_deadmin = parameters[0]
-                entity_to_deadmin, found = find_entity_by_name(datastore_client, name_to_deadmin)
-
-                if found:
-                    entity_to_deadmin['admin'] = False
-                    datastore_client.put(entity_to_deadmin)
-                    command_messages.append({'to': from_number, 'body': f"{name_to_deadmin} is no longer an admin."})
+            try:
+                # Revoke admin privileges (requires super)
+                if not (sender_entity and sender_entity.get('super', False)):
+                    command_messages.append({'to': from_number, 'body': "You are not authorized to revoke admin privileges."})
+                elif len(parameters) != 1:
+                    command_messages.append({'to': from_number, 'body': "Invalid syntax for +deadmin. Usage: +deadmin [name]"})
                 else:
-                    command_messages.append({'to': from_number, 'body': f"User '{name_to_deadmin}' not found."})
+                    name_to_deadmin = parameters[0]
+                    entity_to_deadmin, found = find_entity_by_name(datastore_client, name_to_deadmin)
+
+                    if found:
+                        entity_to_deadmin['admin'] = False
+                        datastore_client.put(entity_to_deadmin)
+                        command_messages.append({'to': from_number, 'body': f"{name_to_deadmin} is no longer an admin."})
+                    else:
+                        command_messages.append({'to': from_number, 'body': f"User '{name_to_deadmin}' not found."})
+            except Exception as e:
+                logger.error(f"Error processing deadmin command for {name_to_deadmin}: {e}", exc_info=True)
+                command_messages.append({'to': from_number, 'body': f'An error occurred while processing the +deadmin command for {name_to_deadmin}.'})
 
         elif command == "user":
-            # Get user details (requires admin/super)
-            if not is_authorized_command_user:
-                command_messages.append({'to': from_number, 'body': "You are not authorized to view user details."})
-            elif len(parameters) != 1:
-                command_messages.append({'to': from_number, 'body': "Invalid syntax for +user. Usage: +user [name]"})
-            else:
-                name_to_find = parameters[0]
-                user_entity, found = find_entity_by_name(datastore_client, name_to_find)
-
-                if found:
-                    # Pretty-print the entity fields
-                    output_message = f"Details for {name_to_find}:\n"
-                    for key, value in user_entity.items():
-                        output_message += f"{key}: {value}\n"
-                    command_messages.append({'to': from_number, 'body': output_message})
+            try:
+                # Get user details (requires admin/super)
+                if not is_authorized_command_user:
+                    command_messages.append({'to': from_number, 'body': "You are not authorized to view user details."})
+                elif len(parameters) != 1:
+                    command_messages.append({'to': from_number, 'body': "Invalid syntax for +user. Usage: +user [name]"})
                 else:
-                    command_messages.append({'to': from_number, 'body': f"User '{name_to_find}' not found."})
-        # Add command messages to the main list of messages to send
+                    name_to_find = parameters[0]
+                    user_entity, found = find_entity_by_name(datastore_client, name_to_find)
+
+                    if found:
+                        # Pretty-print the entity fields
+                        output_message = f"Details for {name_to_find}:\n"
+                        for key, value in user_entity.items():
+                            output_message += f"{key}: {value}\n"
+                        command_messages.append({'to': from_number, 'body': output_message})
+                    else:
+                        command_messages.append({'to': from_number, 'body': f"User '{name_to_find}' not found."})
+            except Exception as e:
+                logger.error(f"Error processing user command for {name_to_find}: {e}", exc_info=True)
+                command_messages.append({'to': from_number, 'body': f'An error occurred while processing the +user command for {name_to_find}.'})
         elif command in ["1", "2", "3", "4"]:
             # Check if the sender is a group member, admin, or super
             is_authorized_plus_command_user = sender_entity and (sender_entity.get(from_group, False) or sender_entity.get('admin', False) or sender_entity.get('super', False))
