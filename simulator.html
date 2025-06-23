@@ -300,6 +300,30 @@
             });
         });
 
+        // Polling function to check for new simulator messages
+        async function pollForMessages() {
+            try {
+                const response = await fetch('/get_simulator_messages');
+                if (response.ok) {
+                    const messages = await response.json();
+                    if (messages && messages.length > 0) {
+                        console.log("Polling received messages:", messages);
+                        messages.forEach(message => {
+                            displayReceivedMessageInWindow(message.body, message.to, message.from_);
+                        });
+                    }
+                } else {
+                    console.error('Error polling for messages:', response.statusText);
+                }
+            } catch (error) {
+                console.error('Error polling for messages:', error);
+            } finally {
+                setTimeout(pollForMessages, 3000); // Poll every 3 seconds
+            }
+        }
+
+        pollForMessages(); // Start polling when the page loads
+
     </script>
 </body>
 </html>
