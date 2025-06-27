@@ -1,0 +1,12 @@
+- name: Add w1 as natloff
+  incoming_message:
+    from: u0
+    to: natloff
+    body: "+natloff w1 u1"
+  expected_outgoing_messages:
+    - to: u0
+      body: "w1 with number +12025551001 is now a natloff."
+      from_: "+16504803067" # Added from_ key
+    - to: u1
+      body: "You have been added to the USA Fencing StripCall app as a natloff."
+      from_: "+16504803067" # Added from_ key

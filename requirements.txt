@@ -4,5 +4,5 @@ gunicorn
 python-dotenv
 twilio
 google-cloud-datastore==2.15.0
-
 google-cloud-secret-manager
+PyYAML

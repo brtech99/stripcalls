@@ -9,3 +9,5 @@ handlers:
   - url: /simulator
     static_files: simulator.html
     upload: simulator.html
+  - url: /.*
+    script: auto

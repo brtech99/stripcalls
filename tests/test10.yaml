@@ -1,0 +1,29 @@
+name: test2
+interactions:
+- incoming_message:
+    from: '+12025551000'
+    to: '+16504803067'
+    body: +resetcbp
+  expected_outgoing_messages:
+  - to: '+12025551000'
+    body: cbp reset for all teams.
+    from_: '+16504803067'
+- incoming_message:
+    from: '+12025551000'
+    to: '+16504803067'
+    body: +list natloff
+  expected_outgoing_messages:
+  - to: '+12025551000'
+    body: 'List for natloff: w1 2025551001, w0 2025551000, Brian 7246122359'
+    from_: '+16504803067'
+- incoming_message:
+    from: '+12025551000'
+    to: '+16504803067'
+    body: +natloff w1 2025551001
+  expected_outgoing_messages:
+  - to: '+12025551000'
+    body: w1 with number +12025551001 is now a natloff.
+    from_: '+16504803067'
+  - to: '+12025551001'
+    body: You have been added to the USA Fencing StripCall app as a natloff.
+    from_: '+16504803067'

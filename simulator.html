@@ -90,7 +90,7 @@
             <select id="recipientSelect">
                 <option value="armorer">armorer</option>
                 <option value="medic">medic</option>
-                <option value="natloff">natloff</option>
+                <option value="natloff" selected>natloff</option>
             </select>
         </div>
     </div>
@@ -109,7 +109,7 @@
              <select id="recipientSelect-1">
                 <option value="armorer">armorer</option>
                 <option value="medic">medic</option>
-                <option value="natloff">natloff</option>
+                <option value="natloff" selected>natloff</option>
             </select>
         </div>
     </div>
@@ -128,7 +128,7 @@
              <select id="recipientSelect-2">
                 <option value="armorer">armorer</option>
                 <option value="medic">medic</option>
-                <option value="natloff">natloff</option>
+                <option value="natloff" selected>natloff</option>
             </select>
         </div>
     </div>
@@ -147,13 +147,10 @@
              <select id="recipientSelect-3">
                 <option value="armorer">armorer</option>
                 <option value="medic">medic</option>
-                <option value="natloff">natloff</option>
+                <option value="natloff" selected>natloff</option>
             </select>
         </div>
     </div>
-
-
-
 
 
 
@@ -195,11 +192,14 @@
             const recipientSelect = simulatorElement.querySelector('select');
 
             sendButton.addEventListener('click', function () {
+
+                console.log("Setting up simulator for:", simulatorNumber); // Log simulator setup
+                console.log("Message window element:", messageWindow); // Log the message window element
+
                 const messageText = messageInput.value;
                 if (messageText.trim() !== '') {
                     const selectedRecipient = recipientSelect.value;
                     let recipientNumber;
-
                     // Determine the 'To' number based on the selected recipient group
                     switch (selectedRecipient) {
                         case 'medic':
@@ -224,24 +224,26 @@
                     }
                     const formData = new URLSearchParams(requestData).toString();
 
-                    fetch('/webhook', {
+                    fetch('/webhook', { // Corrected fetch call indentation
                         method: 'POST',
                         headers: {
                             'Content-Type': 'application/x-www-form-urlencoded',
+                            'X-Simulator-Request': 'true' // Add this header
                         },
                         body: formData,
                     })
-                        .then(response => {
-                            if (response.ok) {
-                                return response.json(); // Parse response as JSON
-                            } else {
-                                console.error('Error:', response.statusText);
-                                return Promise.reject(new Error(response.statusText));
-                            }
-                        })
+                    .then(response => {
+                        // Log the response text for debugging non-OK responses
+                        // If response is OK, proceed to parse JSON
+                        return response.json();
+                    })
                         .then(responseData => {
                             console.log("Response Data:", responseData);
                             displaySentMessage(messageText, messageWindow); // Display the sent message in the sender's window
+                            // Handle YAML output
+                            if (responseData.yaml_content) {
+                                navigator.clipboard.writeText(responseData.yaml_content)
+                            }
                             // Handle simulator messages
                             if (responseData.simulator_messages && responseData.simulator_messages.length > 0) {
                                 responseData.simulator_messages.forEach(simMessage => {
@@ -252,7 +254,7 @@
                             }
                         })
                         .catch(error => {
-                            console.error('Error:', error);
+                            console.error('Fetch error for /webhook:', error); // More specific log
                         });
                 }
                 messageInput.value = '';
@@ -260,6 +262,9 @@
         }
 
         function displaySentMessage(message, messageWindowElement) {
+            console.log("displaySentMessage called with message:", message); // Log the message
+            console.log("messageWindowElement in displaySentMessage:", messageWindowElement); // Log the message window element
+
             const messageDiv = document.createElement('div');
             messageDiv.classList.add('message', 'sent');
             messageDiv.textContent = message;
